@@ -51,9 +51,19 @@ export interface PresentationEvent { schemaVersion: 1; event: KernelEvent }
 export interface Renderer { render(event: PresentationEvent): Promise<void> }
 export interface TelemetryEvent { schemaVersion: 1; name: string; attributes?: Record<string, string> }
 export interface TelemetrySink { emit(event: TelemetryEvent): Promise<void> }
-export interface ExecutionPolicy { filesystem: "native" | "external" | "best-effort" | "unsupported"; network: "native" | "external" | "best-effort" | "unsupported" }
-export interface RuntimeHost { readonly descriptor: { id: string; version: string }; createExecution(request: unknown, context: ExecutionContext): Promise<unknown> }
-export interface SandboxProvider { readonly descriptor: { id: string; version: string }; create(policy: ExecutionPolicy): Promise<unknown> }
+export type EnforcementLevel = "native" | "external" | "best-effort" | "unsupported";
+export type ResourceAccess = "allow" | "deny" | "best-effort";
+export interface ExecutionPolicy { filesystem: ResourceAccess; network: ResourceAccess }
+export const executionPolicySchema = z.object({ filesystem: z.enum(["allow", "deny", "best-effort"]), network: z.enum(["allow", "deny", "best-effort"]) });
+export interface ExecutionRequest { schemaVersion: 1; source?: string; args?: readonly string[]; stdin?: string; workingDirectory?: string; environment?: Record<string, string>; timeoutMs?: number; policy: ExecutionPolicy }
+export const executionRequestSchema = z.object({ schemaVersion, source: z.string().optional(), args: z.array(z.string()).optional(), stdin: z.string().optional(), workingDirectory: z.string().optional(), environment: z.record(z.string()).optional(), timeoutMs: z.number().int().positive().optional(), policy: executionPolicySchema });
+export type RuntimeEvent = { type: "started"; executionId: string } | { type: "stdout"; data: string } | { type: "stderr"; data: string } | { type: "exited"; exitCode?: number } | { type: "completed" } | { type: "failed"; error: HarnessError } | { type: "cancelled" };
+export type ExecutionResult = { executionId: string; status: "completed" | "failed" | "cancelled" | "timed-out"; exitCode?: number; output?: unknown; error?: HarnessError };
+export interface RuntimeExecution { readonly id: string; events(): AsyncIterable<RuntimeEvent>; writeStdin?(data: Uint8Array): Promise<void>; cancel(reason?: string): Promise<void>; result(): Promise<ExecutionResult> }
+export interface SandboxCapabilities { filesystem: EnforcementLevel; network: EnforcementLevel }
+export interface SandboxSession { readonly id: string; dispose(): Promise<void> }
+export interface RuntimeHost { readonly descriptor: { id: string; version: string }; createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> }
+export interface SandboxProvider { readonly descriptor: { id: string; version: string }; readonly capabilities: SandboxCapabilities; create(policy: ExecutionPolicy): Promise<SandboxSession> }
 
 export type KernelCommand = { type: "CreateSession" } | { type: "SubmitInput"; sessionId: string; input: string } | { type: "CancelExecution"; sessionId: string } | { type: "CloseSession"; sessionId: string };
 export type KernelEvent = { type: "ExecutionStarted"; executionId: string } | { type: "OutputStarted" } | { type: "OutputDelta"; text: string } | { type: "OutputCompleted" } | { type: "Warning"; message: string } | { type: "Error"; error: HarnessError } | { type: "ExecutionCompleted" } | { type: "ExecutionCancelled" } | { type: "SessionCreated"; sessionId: string } | { type: "SessionClosed"; sessionId: string };

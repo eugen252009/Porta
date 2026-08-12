@@ -12,4 +12,8 @@ The live smoke test is opt-in with `RUN_OLLAMA_INTEGRATION_TESTS=1`, `OLLAMA_BAS
 
 Provider health is generic and diagnostic: `unreachable`, `resource-unavailable`, `invalid-response`, `provider-error`, and `timeout` are available as optional health reasons. Static plugin qualification does not perform health checks or network I/O.
 
+Runtime execution is modeled as a `RuntimeExecution` lifecycle object rather than a one-shot result. It exposes ordered runtime events, a result, cancellation, and optional stdin. `RuntimeHost` owns execution mechanics; `SandboxProvider` owns enforcement capabilities and session cleanup. `RuntimeCoordinator` rejects unsupported denied guarantees before creating either resource, so policy enforcement fails closed. The current semantic policy dimensions are filesystem and network with `allow`, `deny`, or `best-effort` access and explicit sandbox enforcement levels.
+
+`MockRuntime` and `MockSandbox` provide deterministic, headless qualification fixtures only. No concrete runtime, subprocess, network, or OS sandbox is included.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
