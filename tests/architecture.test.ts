@@ -11,4 +11,8 @@ describe("architecture boundaries", () => {
     }
     expect(files(join(process.cwd(), "src")).filter((file) => file.includes("kernel") || file.includes("contracts")).length).toBeGreaterThan(0);
   });
+  it("keeps Ollama imports confined to its adapter", () => {
+    const sourceFiles = files(join(process.cwd(), "src"));
+    for (const file of sourceFiles.filter((file) => !file.includes("model-ollama") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/ollama/i);
+  });
 });
