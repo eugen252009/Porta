@@ -10,3 +10,4 @@ export * from "./adapters/runtime-deno.js";
 export * from "./adapters/sandbox-deno-permissions.js";
 export * from "./tools.js";
 export * from "./tool-mocks.js";
+export * from "./adapters/tool-mcp.js";

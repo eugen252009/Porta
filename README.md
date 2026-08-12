@@ -18,4 +18,6 @@ Runtime execution is modeled as a `RuntimeExecution` lifecycle object rather tha
 
 Tools use provider-scoped canonical identities such as `provider-a/echo`; display names are not routing identities. `ToolDescriptor.inputSchema`, invocation input, and results are serializable `JsonValue` values. Providers own validation of tool-specific arguments, while the generic router validates envelopes, resolves identity, normalizes malformed results, and does not retry. Tool discovery is runtime behavior and remains separate from side-effect-free plugin preflight.
 
+MCP is integrated as an optional stdio-only `MCPToolProvider` using the official `@modelcontextprotocol/sdk` client. Configure an explicit provider ID, executable command, arguments, working directory, and environment. The adapter maps `tools/list` and `tools/call` into canonical tool contracts; Streamable HTTP and other MCP features are intentionally not implemented. The real stdio qualification fixture is opt-in with `RUN_MCP_INTEGRATION_TESTS=1`.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
