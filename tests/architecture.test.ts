@@ -16,4 +16,5 @@ describe("architecture boundaries", () => {
     for (const file of sourceFiles.filter((file) => !file.includes("model-ollama") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/ollama/i);
   });
   it("keeps runtime and sandbox ports free of concrete adapter imports", () => { for (const file of ["src/contracts.ts", "src/runtime.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/mock-runtime|mock-sandbox|deno|node-runtime|bun|bubblewrap|container/i); });
+  it("keeps Deno knowledge confined to Deno adapter modules", () => { for (const file of files(join(process.cwd(), "src")).filter((file) => !file.includes("runtime-deno") && !file.includes("sandbox-deno-permissions") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/deno|deno\.permissions/i); });
 });

@@ -1,0 +1,44 @@
+import { spawn } from "node:child_process";
+import { z } from "zod";
+import { ExecutionContext, ExecutionRequest, ExecutionResult, HarnessError, HarnessPlugin, HealthCheckable, HealthStatus, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxSession, failure, sandboxBindingSchema } from "../contracts.js";
+import { denoPermissionBindingKind, denoPermissionPayloadSchema, DenoPermissionPayload } from "./sandbox-deno-permissions.js";
+import { executionId } from "../runtime.js";
+
+export interface DenoRuntimeConfig { readonly executable?: string }
+export const denoRuntimeConfigSchema = z.object({ executable: z.string().min(1).optional() });
+export interface DenoProcess { readonly stdin: { end(data?: string): void }; readonly stdout: AsyncIterable<Buffer>; readonly stderr: AsyncIterable<Buffer>; readonly exited: Promise<{ code: number | null; signal?: string | null }>; kill(signal?: NodeJS.Signals): void }
+export type DenoProcessLauncher = (executable: string, args: readonly string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => DenoProcess;
+const defaultLauncher: DenoProcessLauncher = (executable, args, options) => { const child = spawn(executable, [...args], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"] }); return { stdin: child.stdin, stdout: child.stdout, stderr: child.stderr, exited: new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal }))), kill: (signal) => child.kill(signal) }; };
+
+export function buildDenoArguments(request: ExecutionRequest, payload: DenoPermissionPayload): readonly string[] { const args = ["run", "--no-prompt", "--no-config", "--no-remote", "--no-npm", "--no-lock", `--ext=${request.language === "javascript" ? "js" : "ts"}`]; if (payload.filesystem === "allow") args.push("--allow-read", "--allow-write"); else args.push("--deny-read", "--deny-write"); if (payload.network === "allow") args.push("--allow-net"); else args.push("--deny-net"); return [...args, "-", ...(request.args ?? [])]; }
+
+export class DenoRuntime implements RuntimeHost, HealthCheckable {
+  readonly descriptor = { id: "runtime.deno", version: "1" }; readonly supportedBindingKinds = [denoPermissionBindingKind]; private readonly executable: string; private readonly launch: DenoProcessLauncher;
+  constructor(config: DenoRuntimeConfig = {}, launcher: DenoProcessLauncher = defaultLauncher) { this.executable = denoRuntimeConfigSchema.parse(config).executable ?? "deno"; this.launch = launcher; }
+  async createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> {
+    if (!request.language || !["javascript", "typescript"].includes(request.language)) throw failure("RUNTIME_FAILED", "Deno runtime requires a JavaScript or TypeScript language.");
+    if (!sandbox.binding) throw failure("POLICY_VIOLATION", "Deno runtime requires a Deno permission binding.");
+    const binding = sandboxBindingSchema.safeParse(sandbox.binding); if (!binding.success || sandbox.binding.kind !== denoPermissionBindingKind) throw failure("POLICY_VIOLATION", "Deno runtime received an unsupported sandbox binding.");
+    const payload = denoPermissionPayloadSchema.safeParse(sandbox.binding.payload); if (!payload.success) throw failure("SANDBOX_FAILED", "Deno runtime received an invalid permission binding.", false, { issues: payload.error.issues });
+    if (request.source === undefined) throw failure("VALIDATION_FAILED", "Deno execution requires source text.");
+    let process: DenoProcess; try { process = this.launch(this.executable, buildDenoArguments(request, payload.data), { cwd: request.workingDirectory, env: request.environment ? { ...globalThis.process.env, ...request.environment } : globalThis.process.env }); } catch (error) { throw failure("RUNTIME_FAILED", "Deno process could not be started.", true, { cause: error instanceof Error ? error.message : "spawn failure" }); }
+    process.stdin.end(request.source); return new DenoRuntimeExecution(process, context);
+  }
+  async health(): Promise<HealthStatus> { try { const process = this.launch(this.executable, ["--version"], {}); const output = await collectBytes(process.stdout); const exit = await process.exited; return exit.code === 0 && /^deno \d+\.\d+\.\d+/.test(output.trim()) ? { status: "healthy" } : { status: "unhealthy", reason: "provider-error", message: "Deno version check failed." }; } catch { return { status: "unhealthy", reason: "resource-unavailable", message: "Deno executable is unavailable." }; } }
+}
+
+class DenoRuntimeExecution implements RuntimeExecution {
+  readonly id = executionId(); private readonly queue = new AsyncQueue<RuntimeEvent>(); private readonly completion: Promise<ExecutionResult>; private resolveResult!: (result: ExecutionResult) => void; private terminalCause: "cancelled" | "timed-out" | undefined; private terminal = false; private running: Promise<void>;
+  constructor(private readonly process: DenoProcess, private readonly context: ExecutionContext) { this.completion = new Promise((resolve) => { this.resolveResult = resolve; }); this.context.signal.addEventListener("abort", () => { void this.cancel("cancelled"); }, { once: true }); if (context.deadline !== undefined) setTimeout(() => { if (!this.terminal) { this.terminalCause = "timed-out"; this.process.kill("SIGTERM"); } }, Math.max(0, context.deadline - Date.now())); this.running = this.consume(); }
+  events(): AsyncIterable<RuntimeEvent> { return this.queue; }
+  async cancel(reason?: string): Promise<void> { if (!this.terminalCause) this.terminalCause = reason === "deadline" ? "timed-out" : "cancelled"; if (!this.terminal) this.process.kill("SIGTERM"); await this.running; }
+  result(): Promise<ExecutionResult> { return this.completion; }
+  private async consume(): Promise<void> { this.push({ type: "started", executionId: this.id }); await Promise.all([this.read(this.process.stdout, "stdout"), this.read(this.process.stderr, "stderr")]); const exit = await this.process.exited; if (this.terminalCause) { const timedOut = this.terminalCause === "timed-out"; this.finish({ executionId: this.id, status: timedOut ? "timed-out" : "cancelled", error: timedOut ? { code: "TIMEOUT", message: "Deno execution exceeded its deadline.", retryable: true } : undefined }); return; } if (exit.code === 0) { this.push({ type: "exited", exitCode: 0 }); this.finish({ executionId: this.id, status: "completed", exitCode: 0 }); } else { const error: HarnessError = { code: "RUNTIME_FAILED", message: `Deno exited with code ${exit.code ?? "unknown"}.`, retryable: false, details: { exitCode: exit.code, signal: exit.signal ?? undefined } }; this.push({ type: "exited", exitCode: exit.code ?? undefined }); this.push({ type: "failed", error }); this.finish({ executionId: this.id, status: "failed", exitCode: exit.code ?? undefined, error }); } }
+  private async read(stream: AsyncIterable<Buffer>, type: "stdout" | "stderr") { for await (const chunk of stream) this.push({ type, data: chunk.toString() }); }
+  private push(event: RuntimeEvent) { if (!this.terminal) this.queue.push(event); }
+  private finish(result: ExecutionResult) { if (this.terminal) return; this.terminal = true; if (result.status === "completed") this.queue.push({ type: "completed" }); else if (result.status === "cancelled" || result.status === "timed-out") this.queue.push({ type: "cancelled" }); this.resolveResult(result); this.queue.close(); }
+}
+
+class AsyncQueue<T> implements AsyncIterable<T> { private readonly values: T[] = []; private waiter?: (result: IteratorResult<T>) => void; private closed = false; push(value: T) { if (this.closed) return; if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter({ value, done: false }); } else this.values.push(value); } close() { this.closed = true; this.waiter?.({ value: undefined as T, done: true }); this.waiter = undefined; } [Symbol.asyncIterator]() { return { next: async () => this.values.length ? { value: this.values.shift()!, done: false } : this.closed ? { value: undefined as T, done: true } : new Promise<IteratorResult<T>>((resolve) => { this.waiter = resolve; }) }; } }
+async function collectBytes(stream: AsyncIterable<Buffer>): Promise<string> { let result = ""; for await (const chunk of stream) result += chunk.toString(); return result; }
+export function denoRuntimePlugin(runtime: DenoRuntime): HarnessPlugin { const capabilities = [{ id: "runtime.execution", version: "1" }, { id: "runtime.javascript", version: "1" }, { id: "runtime.typescript", version: "1" }, { id: "runtime.streaming", version: "1" }, { id: "runtime.binding.deno-permissions.v1", version: "1" }]; return { manifest: { schemaVersion: 1, id: "runtime.deno", version: "1", provides: capabilities, requires: [] }, register(registrar) { capabilities.forEach((capability) => registrar.provide(capability, runtime)); } }; }

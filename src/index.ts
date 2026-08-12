@@ -6,3 +6,5 @@ export * from "./composition.js";
 export * from "./adapters/model-ollama.js";
 export * from "./runtime.js";
 export * from "./runtime-mocks.js";
+export * from "./adapters/runtime-deno.js";
+export * from "./adapters/sandbox-deno-permissions.js";
