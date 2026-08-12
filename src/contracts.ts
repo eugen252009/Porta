@@ -38,9 +38,6 @@ export interface ModelRequest { schemaVersion: 1; requestId: string; input: stri
 export interface ModelContext extends ExecutionContext {}
 export type ModelEvent = { type: "delta"; text: string } | { type: "completed" };
 export interface ModelProvider { readonly descriptor: ModelDescriptor; generate(request: ModelRequest, context: ModelContext): AsyncIterable<ModelEvent> }
-export interface ToolDescriptor { id: string; version: string; description?: string }
-export interface ToolInvocation { schemaVersion: 1; requestId: string; toolId: string; input: unknown }
-export interface ToolResult { ok: boolean; output?: unknown; error?: HarnessError }
 export interface ToolContext extends ExecutionContext {}
 export interface ToolProvider { listTools(context: ToolContext): Promise<readonly ToolDescriptor[]>; invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> }
 export interface Storage { createSession(session: Session): Promise<void>; getSession(id: string): Promise<Session | undefined>; closeSession(id: string): Promise<void> }
@@ -68,6 +65,14 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([z.nul
 export const bindingKind = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\/[vV]\d+$/);
 export const sandboxBindingSchema = z.object({ schemaVersion: schemaVersion, kind: bindingKind, payload: jsonValueSchema });
 export type SandboxBinding = z.infer<typeof sandboxBindingSchema>;
+export const toolId = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
+export const toolSchema = jsonValueSchema;
+export interface ToolDescriptor { id: string; name: string; version: string; description?: string; inputSchema: JsonValue; metadata?: JsonValue }
+export const toolDescriptorSchema = z.object({ id: toolId, name: z.string().min(1), version: z.string().min(1), description: z.string().optional(), inputSchema: toolSchema, metadata: toolSchema.optional() });
+export interface ToolInvocation { schemaVersion: 1; requestId: string; toolId: string; input: JsonValue }
+export const toolInvocationSchema = z.object({ schemaVersion, requestId: z.string().min(1), toolId: z.string().min(1), input: jsonValueSchema });
+export interface ToolResult { ok: boolean; output?: JsonValue; error?: HarnessError }
+export const toolResultSchema = z.object({ ok: z.boolean(), output: jsonValueSchema.optional(), error: harnessErrorSchema.optional() });
 export interface SandboxSession { readonly id: string; readonly binding?: SandboxBinding; dispose(): Promise<void> }
 export interface RuntimeHost { readonly descriptor: { id: string; version: string }; readonly supportedBindingKinds?: readonly string[]; createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> }
 export interface SandboxProvider { readonly descriptor: { id: string; version: string }; readonly capabilities: SandboxCapabilities; create(policy: ExecutionPolicy): Promise<SandboxSession> }

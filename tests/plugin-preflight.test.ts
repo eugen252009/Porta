@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HarnessPlugin, PluginEnvironmentSnapshot, PluginManager, planPlugins, qualifyPlugin, validatePluginManifest, mockRuntimePlugin, mockSandboxPlugin, MockNativeSandbox, MockRuntime } from "../src/index.js";
+import { HarnessPlugin, PluginEnvironmentSnapshot, PluginManager, planPlugins, qualifyPlugin, validatePluginManifest, mockRuntimePlugin, mockSandboxPlugin, MockNativeSandbox, MockRuntime, MockToolProvider, mockToolPlugin } from "../src/index.js";
 
 const manifest = (id: string, provides: string[] = [], requires: { capability: string; optional?: boolean }[] = []): HarnessPlugin["manifest"] => ({ schemaVersion: 1, id, version: "1", provides: provides.map((capability) => ({ id: capability, version: "1" })), requires });
 const environment = (plugins: HarnessPlugin["manifest"][] = []): PluginEnvironmentSnapshot => ({ availableCapabilities: [], plugins });
@@ -47,4 +47,5 @@ describe("plugin preflight", () => {
     await expect(manager.register([plugin])).rejects.toThrow(); expect(calls).toBe(0);
   });
   it("qualifies runtime and sandbox mock plugins through generic capabilities", () => { const plan = planPlugins([mockSandboxPlugin(new MockNativeSandbox()).manifest, mockRuntimePlugin(new MockRuntime()).manifest]); expect(plan.status).toBe("ready"); expect(plan.activationOrder).toEqual(["runtime.mock", "sandbox.mock"]); });
+  it("qualifies tool providers through generic capabilities", () => { const plan = planPlugins([mockToolPlugin(new MockToolProvider("tools")).manifest]); expect(plan.status).toBe("ready"); });
 });

@@ -16,4 +16,6 @@ Runtime execution is modeled as a `RuntimeExecution` lifecycle object rather tha
 
 `MockRuntime` and `MockSandbox` provide deterministic, headless qualification fixtures only. No concrete runtime, subprocess, network, or OS sandbox is included.
 
+Tools use provider-scoped canonical identities such as `provider-a/echo`; display names are not routing identities. `ToolDescriptor.inputSchema`, invocation input, and results are serializable `JsonValue` values. Providers own validation of tool-specific arguments, while the generic router validates envelopes, resolves identity, normalizes malformed results, and does not retry. Tool discovery is runtime behavior and remains separate from side-effect-free plugin preflight.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
