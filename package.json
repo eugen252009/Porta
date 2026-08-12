@@ -1,0 +1,13 @@
+{
+  "name": "generic-agent-harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": { "zod": "^3.24.1" },
+  "devDependencies": { "@types/node": "^22.10.5", "typescript": "^5.7.2", "vitest": "^2.1.8" }
+}
