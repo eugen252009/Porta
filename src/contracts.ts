@@ -34,9 +34,9 @@ export interface HarnessPlugin { readonly manifest: PluginManifest; register(reg
 export interface ExecutionContext { readonly traceId: string; readonly sessionId: string; readonly executionId: string; readonly signal: AbortSignal; readonly deadline?: number }
 export interface CommandContext { readonly signal?: AbortSignal; readonly deadline?: number; readonly traceId?: string }
 export interface ModelDescriptor { readonly id: string; readonly version: string; readonly capabilities: readonly CapabilityDescriptor[] }
-export interface ModelRequest { schemaVersion: 1; requestId: string; input: string }
+export interface ModelRequest { schemaVersion: 1; requestId: string; input: string; messages?: readonly ModelMessage[]; tools?: readonly ToolDescriptor[] }
 export interface ModelContext extends ExecutionContext {}
-export type ModelEvent = { type: "delta"; text: string } | { type: "completed" };
+export type ModelEvent = { type: "delta"; text: string } | { type: "tool-call"; call: ModelToolCall } | { type: "completed" };
 export interface ModelProvider { readonly descriptor: ModelDescriptor; generate(request: ModelRequest, context: ModelContext): AsyncIterable<ModelEvent> }
 export interface ToolContext extends ExecutionContext {}
 export interface ToolProvider { listTools(context: ToolContext): Promise<readonly ToolDescriptor[]>; invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> }
@@ -65,6 +65,11 @@ export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([z.nul
 export const bindingKind = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\/[vV]\d+$/);
 export const sandboxBindingSchema = z.object({ schemaVersion: schemaVersion, kind: bindingKind, payload: jsonValueSchema });
 export type SandboxBinding = z.infer<typeof sandboxBindingSchema>;
+export interface ModelToolCall { id: string; toolId: string; input: JsonValue }
+export const modelToolCallSchema = z.object({ id: z.string().min(1), toolId: z.string().min(1), input: jsonValueSchema });
+export interface ModelToolResult { toolCallId: string; toolId: string; output: JsonValue; error?: HarnessError }
+export const modelToolResultSchema = z.object({ toolCallId: z.string().min(1), toolId: z.string().min(1), output: jsonValueSchema, error: harnessErrorSchema.optional() });
+export type ModelMessage = { role: "user"; content: string } | { role: "tool"; toolCallId: string; toolId: string; result: ModelToolResult };
 export const toolId = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
 export const toolSchema = jsonValueSchema;
 export interface ToolDescriptor { id: string; name: string; version: string; description?: string; inputSchema: JsonValue; metadata?: JsonValue }

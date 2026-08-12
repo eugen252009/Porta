@@ -20,4 +20,6 @@ Tools use provider-scoped canonical identities such as `provider-a/echo`; displa
 
 MCP is integrated as an optional stdio-only `MCPToolProvider` using the official `@modelcontextprotocol/sdk` client. Configure an explicit provider ID, executable command, arguments, working directory, and environment. The adapter maps `tools/list` and `tools/call` into canonical tool contracts; Streamable HTTP and other MCP features are intentionally not implemented. The real stdio qualification fixture is opt-in with `RUN_MCP_INTEGRATION_TESTS=1`.
 
+Agent execution is a provider-neutral loop over `ModelProvider` and `ToolRouter`. It owns canonical tool-call IDs, sequential tool execution, tool-result correlation, execution-local deduplication, step/tool-call limits, cancellation, deadlines, and lifecycle events. Tool failures are model-visible results; global cancellation, deadlines, malformed model calls, and limits terminate the execution. No model adapter or protocol adapter is invoked directly by the orchestrator.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
