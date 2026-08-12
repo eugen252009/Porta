@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ExecutionPolicy, ExecutionRequest, ExecutionResult, ExecutionContext, HarnessFailure, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxProvider, failure, executionRequestSchema } from "./contracts.js";
+import { ExecutionPolicy, ExecutionRequest, ExecutionResult, ExecutionContext, HarnessFailure, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxProvider, failure, executionRequestSchema, sandboxBindingSchema } from "./contracts.js";
 
 export interface ExecutionDecision { allowed: boolean; error?: { code: "POLICY_VIOLATION" | "VALIDATION_FAILED" | "TIMEOUT"; message: string; details?: unknown } }
 
@@ -19,7 +19,15 @@ export class RuntimeCoordinator {
     const decision = evaluateExecutionPolicy(request.policy, this.sandbox.capabilities);
     if (!decision.allowed) throw failure(decision.error!.code, decision.error!.message, false, decision.error!.details);
     let session;
-    try { session = await this.sandbox.create(request.policy); return new ManagedExecution(await this.runtime.createExecution(request, context, session), session); }
+    try {
+      session = await this.sandbox.create(request.policy);
+      if (session.binding) {
+        const binding = sandboxBindingSchema.safeParse(session.binding);
+        if (!binding.success) throw failure("SANDBOX_FAILED", "Sandbox returned an invalid binding envelope.", false, { issues: binding.error.issues });
+        if (!this.runtime.supportedBindingKinds?.includes(session.binding.kind)) throw failure("POLICY_VIOLATION", `Runtime does not support sandbox binding '${session.binding.kind}'.`);
+      }
+      return new ManagedExecution(await this.runtime.createExecution(request, context, session), session);
+    }
     catch (error) { if (session) await session.dispose(); throw error; }
   }
 }

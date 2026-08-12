@@ -61,8 +61,14 @@ export type RuntimeEvent = { type: "started"; executionId: string } | { type: "s
 export type ExecutionResult = { executionId: string; status: "completed" | "failed" | "cancelled" | "timed-out"; exitCode?: number; output?: unknown; error?: HarnessError };
 export interface RuntimeExecution { readonly id: string; events(): AsyncIterable<RuntimeEvent>; writeStdin?(data: Uint8Array): Promise<void>; cancel(reason?: string): Promise<void>; result(): Promise<ExecutionResult> }
 export interface SandboxCapabilities { filesystem: EnforcementLevel; network: EnforcementLevel }
-export interface SandboxSession { readonly id: string; dispose(): Promise<void> }
-export interface RuntimeHost { readonly descriptor: { id: string; version: string }; createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> }
+export type JsonPrimitive = null | boolean | number | string;
+export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([z.null(), z.boolean(), z.number().finite(), z.string(), z.array(jsonValueSchema), z.record(jsonValueSchema)]));
+export const bindingKind = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\/[vV]\d+$/);
+export const sandboxBindingSchema = z.object({ schemaVersion: schemaVersion, kind: bindingKind, payload: jsonValueSchema });
+export type SandboxBinding = z.infer<typeof sandboxBindingSchema>;
+export interface SandboxSession { readonly id: string; readonly binding?: SandboxBinding; dispose(): Promise<void> }
+export interface RuntimeHost { readonly descriptor: { id: string; version: string }; readonly supportedBindingKinds?: readonly string[]; createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> }
 export interface SandboxProvider { readonly descriptor: { id: string; version: string }; readonly capabilities: SandboxCapabilities; create(policy: ExecutionPolicy): Promise<SandboxSession> }
 
 export type KernelCommand = { type: "CreateSession" } | { type: "SubmitInput"; sessionId: string; input: string } | { type: "CancelExecution"; sessionId: string } | { type: "CloseSession"; sessionId: string };

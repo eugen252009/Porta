@@ -1,4 +1,5 @@
-import { ExecutionContext, ExecutionRequest, ExecutionResult, EnforcementLevel, HarnessError, HarnessPlugin, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxCapabilities, SandboxProvider, SandboxSession, failure } from "./contracts.js";
+import { z } from "zod";
+import { ExecutionContext, ExecutionRequest, ExecutionResult, HarnessError, HarnessPlugin, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxBinding, SandboxCapabilities, SandboxProvider, SandboxSession, failure } from "./contracts.js";
 import { executionId } from "./runtime.js";
 
 class EventQueue<T> {
@@ -29,16 +30,21 @@ export class MockRuntimeExecution implements RuntimeExecution {
 }
 
 export class MockRuntime implements RuntimeHost {
-  readonly descriptor = { id: "mock-runtime", version: "1" }; starts = 0; constructor(private readonly fail = false) {}
-  async createExecution(request: ExecutionRequest, context: ExecutionContext, _sandbox: SandboxSession): Promise<RuntimeExecution> { this.starts++; return new MockRuntimeExecution(request, context, this.fail); }
+  readonly descriptor = { id: "mock-runtime", version: "1" }; readonly supportedBindingKinds = ["mock.permissions/v1"]; starts = 0; consumedBindings: SandboxBinding[] = []; constructor(private readonly fail = false) {}
+  async createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> { if (sandbox.binding) { const parsed = ExampleBindingPayloadSchema.safeParse(sandbox.binding.payload); if (!parsed.success) throw failure("SANDBOX_FAILED", "Mock runtime received an invalid binding payload."); this.consumedBindings.push(sandbox.binding); } this.starts++; return new MockRuntimeExecution(request, context, this.fail); }
 }
 
-export class MockSandboxSession implements SandboxSession { readonly id = executionId(); disposed = false; async dispose() { this.disposed = true; } }
+export class MockSandboxSession implements SandboxSession { readonly id = executionId(); disposed = false; constructor(readonly binding?: SandboxBinding) {} async dispose() { this.disposed = true; } }
 export class MockSandbox implements SandboxProvider {
   readonly descriptor = { id: "mock-sandbox", version: "1" }; readonly capabilities: SandboxCapabilities; creates = 0; readonly sessions: MockSandboxSession[] = [];
-  constructor(capabilities: Partial<SandboxCapabilities> = {}) { this.capabilities = { filesystem: "native", network: "native", ...capabilities }; }
-  async create(_policy: ExecutionRequest["policy"]): Promise<SandboxSession> { this.creates++; const session = new MockSandboxSession(); this.sessions.push(session); return session; }
+  constructor(capabilities: Partial<SandboxCapabilities> = {}, private readonly binding?: SandboxBinding) { this.capabilities = { filesystem: "native", network: "native", ...capabilities }; }
+  async create(_policy: ExecutionRequest["policy"]): Promise<SandboxSession> { this.creates++; const session = new MockSandboxSession(this.binding); this.sessions.push(session); return session; }
 }
 
-export function mockRuntimePlugin(runtime: RuntimeHost): HarnessPlugin { return { manifest: { schemaVersion: 1, id: "runtime.mock", version: "1", provides: [{ id: "runtime.execution", version: "1" }, { id: "runtime.streaming", version: "1" }], requires: [] }, register(registrar) { registrar.provide({ id: "runtime.execution", version: "1" }, runtime); registrar.provide({ id: "runtime.streaming", version: "1" }, runtime); } }; }
-export function mockSandboxPlugin(sandbox: SandboxProvider): HarnessPlugin { return { manifest: { schemaVersion: 1, id: "sandbox.mock", version: "1", provides: [{ id: "sandbox.filesystem", version: "1" }, { id: "sandbox.network", version: "1" }], requires: [] }, register(registrar) { registrar.provide({ id: "sandbox.filesystem", version: "1" }, sandbox); registrar.provide({ id: "sandbox.network", version: "1" }, sandbox); } }; }
+export const ExampleBindingPayloadSchema = z.object({ mode: z.enum(["restricted", "unrestricted"]) });
+export const exampleBinding = (mode: "restricted" | "unrestricted" = "restricted"): SandboxBinding => ({ schemaVersion: 1, kind: "mock.permissions/v1", payload: { mode } });
+export class MockExternalSandbox extends MockSandbox { constructor() { super(); } }
+export class MockNativeSandbox extends MockSandbox { constructor(binding: SandboxBinding = exampleBinding()) { super({}, binding); } }
+
+export function mockRuntimePlugin(runtime: RuntimeHost): HarnessPlugin { return { manifest: { schemaVersion: 1, id: "runtime.mock", version: "1", provides: [{ id: "runtime.execution", version: "1" }, { id: "runtime.streaming", version: "1" }, { id: "runtime.binding.mock-permissions.v1", version: "1" }], requires: [] }, register(registrar) { registrar.provide({ id: "runtime.execution", version: "1" }, runtime); registrar.provide({ id: "runtime.streaming", version: "1" }, runtime); registrar.provide({ id: "runtime.binding.mock-permissions.v1", version: "1" }, runtime); } }; }
+export function mockSandboxPlugin(sandbox: SandboxProvider): HarnessPlugin { return { manifest: { schemaVersion: 1, id: "sandbox.mock", version: "1", provides: [{ id: "sandbox.filesystem", version: "1" }, { id: "sandbox.network", version: "1" }], requires: sandbox instanceof MockNativeSandbox ? [{ capability: "runtime.binding.mock-permissions.v1" }] : [] }, register(registrar) { registrar.provide({ id: "sandbox.filesystem", version: "1" }, sandbox); registrar.provide({ id: "sandbox.network", version: "1" }, sandbox); } }; }
