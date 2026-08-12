@@ -41,6 +41,18 @@ describe("Ollama adapter", () => {
     expect(await provider.health()).toEqual({ status: "healthy" });
     expect(createOllamaPlugin(provider).manifest.provides.map((item) => item.id)).toEqual(["model.text", "model.streaming"]);
   });
+  it("reports generic health diagnostics", async () => {
+    const unreachable = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async () => { throw new Error("connection refused"); });
+    expect(await unreachable.health()).toMatchObject({ status: "unhealthy", reason: "unreachable" });
+    const missing = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "missing-model" }, async () => response(null, 200, { models: [{ name: "other-model" }] }));
+    expect(await missing.health()).toMatchObject({ status: "unhealthy", reason: "resource-unavailable", details: { resourceType: "model", resourceName: "missing-model" } });
+    const malformed = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async () => response(null, 200, { invalid: true }));
+    expect(await malformed.health()).toMatchObject({ status: "unhealthy", reason: "invalid-response" });
+  });
+  it("reports health request timeouts", async () => {
+    const provider = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model", timeoutMs: 1 }, async (_input, init) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("timeout", "AbortError")), { once: true })));
+    expect(await provider.health()).toMatchObject({ status: "unhealthy", reason: "timeout" });
+  });
 });
 
 const live = process.env.RUN_OLLAMA_INTEGRATION_TESTS === "1" ? describe : describe.skip;

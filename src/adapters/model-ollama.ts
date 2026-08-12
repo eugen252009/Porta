@@ -71,14 +71,22 @@ export class OllamaModelProvider implements ModelProvider, HealthCheckable {
   }
 
   async health(): Promise<HealthStatus> {
+    const control = new AbortController();
+    const timer = this.config.timeoutMs === undefined ? undefined : setTimeout(() => control.abort(), this.config.timeoutMs);
     try {
-      const response = await this.fetch(`${this.config.baseUrl.replace(/\/$/, "")}/api/tags`);
-      if (!response.ok) return { status: "unhealthy", message: `Ollama health request returned HTTP ${response.status}.` };
+      let response: Response;
+      try { response = await this.fetch(`${this.config.baseUrl.replace(/\/$/, "")}/api/tags`, { signal: control.signal }); }
+      catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return { status: "unhealthy", reason: "timeout", message: "Ollama health check timed out." };
+        return { status: "unhealthy", reason: "unreachable", message: "Ollama could not be reached." };
+      }
+      if (!response.ok) return { status: "unhealthy", reason: "provider-error", message: `Ollama health request returned HTTP ${response.status}.`, details: { status: response.status } };
       const tags = ollamaTagsSchema.safeParse(await response.json());
-      if (!tags.success) return { status: "unhealthy", message: "Ollama returned a malformed model list." };
+      if (!tags.success) return { status: "unhealthy", reason: "invalid-response", message: "Ollama returned a malformed model list." };
       const available = tags.data.models.some((model) => model.name === this.config.model || model.model === this.config.model);
-      return available ? { status: "healthy" } : { status: "unhealthy", message: `Configured model '${this.config.model}' is unavailable.` };
-    } catch { return { status: "unhealthy", message: "Ollama is unavailable." }; }
+      return available ? { status: "healthy" } : { status: "unhealthy", reason: "resource-unavailable", message: "The configured model is unavailable.", details: { resourceType: "model", resourceName: this.config.model } };
+    } catch { return { status: "unhealthy", reason: "invalid-response", message: "Ollama returned an unreadable health response." }; }
+    finally { if (timer !== undefined) clearTimeout(timer); }
   }
 
   private async mapHttpError(response: Response): Promise<HarnessFailure> {

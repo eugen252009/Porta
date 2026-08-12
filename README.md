@@ -10,4 +10,6 @@ The first production model adapter is optional Ollama support in `src/adapters/m
 
 The live smoke test is opt-in with `RUN_OLLAMA_INTEGRATION_TESTS=1`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL`; it never downloads models.
 
+Provider health is generic and diagnostic: `unreachable`, `resource-unavailable`, `invalid-response`, `provider-error`, and `timeout` are available as optional health reasons. Static plugin qualification does not perform health checks or network I/O.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.

@@ -23,7 +23,10 @@ export interface Initializable { initialize(context: ComponentContext): Promise<
 export interface Startable { start(): Promise<void> }
 export interface Stoppable { stop(): Promise<void> }
 export interface HealthCheckable { health(): Promise<HealthStatus> }
-export interface HealthStatus { status: "healthy" | "unhealthy"; message?: string }
+export const healthReasons = ["unreachable", "resource-unavailable", "invalid-response", "timeout", "provider-error", "configuration-invalid"] as const;
+export type HealthReason = (typeof healthReasons)[number];
+export interface HealthStatus { status: "healthy" | "unhealthy"; reason?: HealthReason; message?: string; details?: unknown }
+export const healthStatusSchema = z.object({ status: z.enum(["healthy", "unhealthy"]), reason: z.enum(healthReasons).optional(), message: z.string().optional(), details: z.unknown().optional() });
 export interface CapabilityResolver { resolve(requirement: CapabilityRequirement): CapabilityDescriptor | undefined }
 export interface PluginRegistrar { provide(capability: CapabilityDescriptor, component: unknown): void }
 export interface HarnessPlugin { readonly manifest: PluginManifest; register(registrar: PluginRegistrar): void | Promise<void>; initialize?: Initializable["initialize"]; start?: Startable["start"]; stop?: Stoppable["stop"] }
