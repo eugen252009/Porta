@@ -4,8 +4,9 @@ import { ExecutionPolicy, ExecutionRequest, ExecutionResult, ExecutionContext, H
 export interface ExecutionDecision { allowed: boolean; error?: { code: "POLICY_VIOLATION" | "VALIDATION_FAILED" | "TIMEOUT"; message: string; details?: unknown } }
 
 export function evaluateExecutionPolicy(policy: ExecutionPolicy, capabilities: SandboxProvider["capabilities"]): ExecutionDecision {
-  for (const dimension of ["filesystem", "network"] as const) {
-    if (policy[dimension] === "deny" && capabilities[dimension] === "unsupported") return { allowed: false, error: { code: "POLICY_VIOLATION", message: `Sandbox cannot enforce denied ${dimension} access.`, details: { dimension, required: "deny", supported: capabilities[dimension] } } };
+  const normalized = { ...policy, codeLoading: policy.codeLoading ?? "allow" as const };
+  for (const dimension of ["filesystem", "network", "codeLoading"] as const) {
+    if (normalized[dimension] === "deny" && capabilities[dimension] === "unsupported") return { allowed: false, error: { code: "POLICY_VIOLATION", message: `Sandbox cannot enforce denied ${dimension} access.`, details: { dimension, required: "deny", supported: capabilities[dimension] } } };
   }
   return { allowed: true };
 }

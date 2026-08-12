@@ -37,7 +37,7 @@ export class MockRuntime implements RuntimeHost {
 export class MockSandboxSession implements SandboxSession { readonly id = executionId(); disposed = false; constructor(readonly binding?: SandboxBinding) {} async dispose() { this.disposed = true; } }
 export class MockSandbox implements SandboxProvider {
   readonly descriptor = { id: "mock-sandbox", version: "1" }; readonly capabilities: SandboxCapabilities; creates = 0; readonly sessions: MockSandboxSession[] = [];
-  constructor(capabilities: Partial<SandboxCapabilities> = {}, private readonly binding?: SandboxBinding) { this.capabilities = { filesystem: "native", network: "native", ...capabilities }; }
+  constructor(capabilities: Partial<SandboxCapabilities> = {}, private readonly binding?: SandboxBinding) { this.capabilities = { filesystem: "native", network: "native", codeLoading: "native", ...capabilities }; }
   async create(_policy: ExecutionRequest["policy"]): Promise<SandboxSession> { this.creates++; const session = new MockSandboxSession(this.binding); this.sessions.push(session); return session; }
 }
 

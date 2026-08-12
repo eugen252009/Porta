@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ExecutionRequest, RuntimeEvent, sandboxBindingSchema } from "../src/index.js";
+import { ExecutionRequest, RuntimeEvent, executionPolicySchema, sandboxBindingSchema } from "../src/index.js";
 import { exampleBinding, MockExternalSandbox, MockNativeSandbox, MockRuntime, MockRuntimeExecution, MockSandbox } from "../src/runtime-mocks.js";
 import { RuntimeCoordinator, evaluateExecutionPolicy } from "../src/runtime.js";
 
@@ -33,7 +33,17 @@ describe("runtime and sandbox contracts", () => {
   it("cleans up when runtime creation fails", async () => {
     const sandbox = new MockSandbox(); const runtime = { descriptor: { id: "failing", version: "1" }, createExecution: async () => { throw new Error("create failed"); } }; await expect(new RuntimeCoordinator(runtime, sandbox).createExecution(request(), context())).rejects.toThrow("create failed"); expect(sandbox.sessions[0]!.disposed).toBe(true);
   });
-  it("uses explicit enforcement levels without a secure boolean", () => { expect(evaluateExecutionPolicy({ filesystem: "deny", network: "deny" }, { filesystem: "native", network: "unsupported" }).allowed).toBe(false); expect(evaluateExecutionPolicy({ filesystem: "deny", network: "best-effort" }, { filesystem: "native", network: "unsupported" }).allowed).toBe(true); });
+  it("uses explicit enforcement levels without a secure boolean", () => { const native = { filesystem: "native" as const, network: "unsupported" as const, codeLoading: "native" as const }; expect(evaluateExecutionPolicy({ filesystem: "deny", network: "deny", codeLoading: "allow" }, native).allowed).toBe(false); expect(evaluateExecutionPolicy({ filesystem: "deny", network: "best-effort", codeLoading: "best-effort" }, { ...native, network: "unsupported" }).allowed).toBe(true); });
+  it("evaluates code loading independently", () => {
+    expect(evaluateExecutionPolicy({ filesystem: "deny", network: "deny", codeLoading: "deny" }, { filesystem: "native", network: "native", codeLoading: "native" }).allowed).toBe(true);
+    expect(evaluateExecutionPolicy({ filesystem: "deny", network: "deny", codeLoading: "deny" }, { filesystem: "native", network: "native", codeLoading: "unsupported" }).allowed).toBe(false);
+    expect(evaluateExecutionPolicy({ filesystem: "deny", network: "deny", codeLoading: "deny" }, { filesystem: "native", network: "native", codeLoading: "external" }).allowed).toBe(true);
+    expect(evaluateExecutionPolicy({ filesystem: "deny", network: "deny", codeLoading: "best-effort" }, { filesystem: "native", network: "native", codeLoading: "unsupported" }).allowed).toBe(true);
+    for (const filesystem of ["allow", "deny"] as const) for (const codeLoading of ["allow", "deny"] as const) expect(evaluateExecutionPolicy({ filesystem, network: "allow", codeLoading }, { filesystem: "native", network: "native", codeLoading: "native" }).allowed).toBe(true);
+  });
+  it("prevents runtime start when code loading denial is unsupported", async () => { const runtime = new MockRuntime(); const sandbox = new MockSandbox({ codeLoading: "unsupported" }); await expect(new RuntimeCoordinator(runtime, sandbox).createExecution({ ...request(), policy: { filesystem: "deny", network: "deny", codeLoading: "deny" } }, context())).rejects.toMatchObject({ error: { code: "POLICY_VIOLATION" } }); expect(runtime.starts).toBe(0); expect(sandbox.creates).toBe(0); });
+  it("normalizes the backward-compatible code loading default", () => { expect(executionPolicySchema.parse({ filesystem: "deny", network: "allow" }).codeLoading).toBe("allow"); });
+  it("preserves timeout as the semantic terminal cause", async () => { const execution = new MockRuntimeExecution({ ...request("alpha"), policy: { filesystem: "deny", network: "deny", codeLoading: "allow" } }, context(new AbortController().signal, Date.now() - 1)); expect((await execution.result()).status).toBe("timed-out"); });
   it("validates the generic binding envelope and preserves serialization", () => { const binding = exampleBinding(); expect(sandboxBindingSchema.parse(JSON.parse(JSON.stringify(binding)))).toEqual(binding); expect(() => sandboxBindingSchema.parse({ schemaVersion: 1, kind: "invalid", payload: {} })).toThrow(); });
   it("consumes a matching binding and permits an external no-binding sandbox", async () => {
     const runtime = new MockRuntime(); const nativeSandbox = new MockNativeSandbox(); const nativeExecution = await new RuntimeCoordinator(runtime, nativeSandbox).createExecution(request(), context()); await collect(nativeExecution.events()); await nativeExecution.result(); expect(runtime.consumedBindings).toHaveLength(1);

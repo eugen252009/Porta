@@ -53,14 +53,14 @@ export interface TelemetryEvent { schemaVersion: 1; name: string; attributes?: R
 export interface TelemetrySink { emit(event: TelemetryEvent): Promise<void> }
 export type EnforcementLevel = "native" | "external" | "best-effort" | "unsupported";
 export type ResourceAccess = "allow" | "deny" | "best-effort";
-export interface ExecutionPolicy { filesystem: ResourceAccess; network: ResourceAccess }
-export const executionPolicySchema = z.object({ filesystem: z.enum(["allow", "deny", "best-effort"]), network: z.enum(["allow", "deny", "best-effort"]) });
+export interface ExecutionPolicy { filesystem: ResourceAccess; network: ResourceAccess; codeLoading?: ResourceAccess }
+export const executionPolicySchema = z.object({ filesystem: z.enum(["allow", "deny", "best-effort"]), network: z.enum(["allow", "deny", "best-effort"]), codeLoading: z.enum(["allow", "deny", "best-effort"]).default("allow") });
 export interface ExecutionRequest { schemaVersion: 1; source?: string; args?: readonly string[]; stdin?: string; workingDirectory?: string; environment?: Record<string, string>; timeoutMs?: number; policy: ExecutionPolicy }
 export const executionRequestSchema = z.object({ schemaVersion, source: z.string().optional(), args: z.array(z.string()).optional(), stdin: z.string().optional(), workingDirectory: z.string().optional(), environment: z.record(z.string()).optional(), timeoutMs: z.number().int().positive().optional(), policy: executionPolicySchema });
 export type RuntimeEvent = { type: "started"; executionId: string } | { type: "stdout"; data: string } | { type: "stderr"; data: string } | { type: "exited"; exitCode?: number } | { type: "completed" } | { type: "failed"; error: HarnessError } | { type: "cancelled" };
 export type ExecutionResult = { executionId: string; status: "completed" | "failed" | "cancelled" | "timed-out"; exitCode?: number; output?: unknown; error?: HarnessError };
 export interface RuntimeExecution { readonly id: string; events(): AsyncIterable<RuntimeEvent>; writeStdin?(data: Uint8Array): Promise<void>; cancel(reason?: string): Promise<void>; result(): Promise<ExecutionResult> }
-export interface SandboxCapabilities { filesystem: EnforcementLevel; network: EnforcementLevel }
+export interface SandboxCapabilities { filesystem: EnforcementLevel; network: EnforcementLevel; codeLoading: EnforcementLevel }
 export type JsonPrimitive = null | boolean | number | string;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 export const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([z.null(), z.boolean(), z.number().finite(), z.string(), z.array(jsonValueSchema), z.record(jsonValueSchema)]));
