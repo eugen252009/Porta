@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 export const schemaVersion = z.literal(1);
-export const id = z.string().min(1);
+export const id = z.string().regex(/^[a-z0-9][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
+export const pluginId = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
+export const capabilityId = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$/);
 
 export const errorCodes = ["CAPABILITY_UNAVAILABLE", "CAPABILITY_CONFLICT", "PLUGIN_INVALID", "PLUGIN_DEPENDENCY_MISSING", "VALIDATION_FAILED", "AUTHORIZATION_DENIED", "POLICY_VIOLATION", "MODEL_FAILED", "TOOL_FAILED", "RUNTIME_FAILED", "SANDBOX_FAILED", "STORAGE_FAILED", "TIMEOUT", "CANCELLED", "INTERNAL_ERROR"] as const;
 export type ErrorCode = (typeof errorCodes)[number];
@@ -12,10 +14,10 @@ export const failure = (code: ErrorCode, message: string, retryable = false, det
 
 export interface CapabilityDescriptor { id: string; version: string; attributes?: Record<string, unknown> }
 export interface CapabilityRequirement { capability: string; version?: string; optional?: boolean }
-export const capabilityDescriptorSchema = z.object({ id: id, version: z.string().min(1), attributes: z.record(z.unknown()).optional() });
-export const capabilityRequirementSchema = z.object({ capability: id, version: z.string().min(1).optional(), optional: z.boolean().optional() });
-export const pluginManifestSchema = z.object({ id, version: z.string().min(1), provides: z.array(capabilityDescriptorSchema), requires: z.array(capabilityRequirementSchema) });
-export interface PluginManifest { id: string; version: string; provides: readonly CapabilityDescriptor[]; requires: readonly CapabilityRequirement[] }
+export const capabilityDescriptorSchema = z.object({ id: capabilityId, version: z.string().regex(/^\d+(?:\.\d+)*(?:[-+][a-z0-9.-]+)?$/i), attributes: z.record(z.unknown()).optional() });
+export const capabilityRequirementSchema = z.object({ capability: capabilityId, version: z.string().regex(/^\d+(?:\.\d+)*(?:[-+][a-z0-9.-]+)?$/i).optional(), optional: z.boolean().optional() });
+export const pluginManifestSchema = z.object({ schemaVersion: schemaVersion, id: pluginId, version: z.string().regex(/^\d+(?:\.\d+)*(?:[-+][a-z0-9.-]+)?$/i), provides: z.array(capabilityDescriptorSchema), requires: z.array(capabilityRequirementSchema) });
+export interface PluginManifest { schemaVersion: 1; id: string; version: string; provides: readonly CapabilityDescriptor[]; requires: readonly CapabilityRequirement[] }
 export interface ComponentContext { readonly capabilities: CapabilityResolver }
 export interface Initializable { initialize(context: ComponentContext): Promise<void> }
 export interface Startable { start(): Promise<void> }

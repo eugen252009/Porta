@@ -13,13 +13,13 @@ describe("headless vertical slice", () => {
 describe("plugin lifecycle", () => {
   it("starts in registration order and stops in reverse order", async () => {
     const order: string[] = [];
-    const make = (id: string) => ({ manifest: { id, version: "1", provides: [{ id: `cap.${id}`, version: "1" }], requires: [] }, register() {}, initialize: async () => { order.push(`init:${id}`); }, start: async () => { order.push(`start:${id}`); }, stop: async () => { order.push(`stop:${id}`); } });
+    const make = (id: string) => ({ manifest: { schemaVersion: 1 as const, id, version: "1", provides: [{ id: `cap.${id}`, version: "1" }], requires: [] }, register() {}, initialize: async () => { order.push(`init:${id}`); }, start: async () => { order.push(`start:${id}`); }, stop: async () => { order.push(`stop:${id}`); } });
     const manager = new PluginManager(); const plugins = [make("a"), make("b")]; await manager.register(plugins); await manager.stop(plugins);
     expect(order).toEqual(["init:a", "init:b", "start:a", "start:b", "stop:b", "stop:a"]);
   });
   it("cleans up after initialization failure", async () => {
     const order: string[] = [];
-    const plugin = (id: string, fails = false) => ({ manifest: { id, version: "1", provides: [{ id: `cleanup.${id}`, version: "1" }], requires: [] }, register() {}, initialize: async () => { order.push(`init:${id}`); if (fails) throw new Error("init"); }, stop: async () => { order.push(`stop:${id}`); } });
+    const plugin = (id: string, fails = false) => ({ manifest: { schemaVersion: 1 as const, id, version: "1", provides: [{ id: `cleanup.${id}`, version: "1" }], requires: [] }, register() {}, initialize: async () => { order.push(`init:${id}`); if (fails) throw new Error("init"); }, stop: async () => { order.push(`stop:${id}`); } });
     const manager = new PluginManager(); const plugins = [plugin("a"), plugin("b", true)]; await expect(manager.register(plugins)).rejects.toThrow(); expect(order).toEqual(["init:a", "init:b", "stop:a"]);
   });
   it("propagates cancellation", async () => {

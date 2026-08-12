@@ -5,7 +5,7 @@ import { join } from "node:path";
 function files(dir: string): string[] { return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? files(join(dir, entry.name)) : entry.name.endsWith(".ts") ? [join(dir, entry.name)] : []); }
 describe("architecture boundaries", () => {
   it("keeps kernel and contracts free of concrete infrastructure imports", () => {
-    for (const directory of ["src/kernel.ts", "src/contracts.ts"]) {
+    for (const directory of ["src/kernel.ts", "src/contracts.ts", "src/plugin-preflight.ts"]) {
       const source = readFileSync(join(process.cwd(), directory), "utf8");
       expect(source).not.toMatch(/from\s+["'](?:[^"']*vendor|[^"']*protocol|[^"']*database|[^"']*mcp|[^"']*express|[^"']*react|[^"']*sqlite|[^"']*postgres)/i);
     }
