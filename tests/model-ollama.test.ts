@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OllamaModelProvider, createOllamaPlugin, mapOllamaChunk, mapRequestToOllama, ollamaModelProviderConfigSchema } from "../src/adapters/model-ollama.js";
+import { OllamaModelProvider, createOllamaPlugin, mapOllamaChunk, mapRequestToOllama, mapToolsToOllama, ollamaModelProviderConfigSchema } from "../src/adapters/model-ollama.js";
 import { ModelEvent } from "../src/index.js";
 
 const request = { schemaVersion: 1 as const, requestId: "request", input: "hello" };
@@ -16,6 +16,8 @@ describe("Ollama adapter", () => {
     expect(mapOllamaChunk({ message: { role: "assistant", content: "hi" }, done: false })).toEqual({ type: "delta", text: "hi" });
     expect(mapOllamaChunk({ done: true })).toEqual({ type: "completed" });
   });
+  it("maps colliding provider-scoped tools to distinct native names", () => { const tools = [{ id: "server-a/echo", name: "echo", version: "1", inputSchema: {} }, { id: "server-b/echo", name: "echo", version: "1", inputSchema: {} }]; const mapped = mapToolsToOllama(tools); expect(mapped.mappings.map((entry) => entry.nativeName)).toEqual(["harness_tool_0", "harness_tool_1"]); expect(mapped.mappings.map((entry) => entry.canonicalId)).toEqual(["server-a/echo", "server-b/echo"]); });
+  it("maps native tool calls back to canonical identity", () => { const event = mapOllamaChunk({ message: { tool_calls: [{ function: { name: "harness_tool_1", arguments: { value: "ok" } } }] }, done: false }, new Map([["harness_tool_1", "server-b/echo"]]))!; expect(event).toEqual({ type: "tool-call", call: { id: "ollama-tool-0", toolId: "server-b/echo", input: { value: "ok" } } }); });
   it("parses multiple records and records split across reads", async () => {
     const provider = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async (_input, init) => { expect(init?.method).toBe("POST"); expect(JSON.parse(String(init?.body))).toMatchObject({ model: "generic-model" }); return response(stream([`{"message":{"content":"a"},"done":false}\n{"message":{"content":"b"},`, `"done":false}\n{"done":true}\n`])); });
     expect(await collect(provider.generate(request, context()))).toEqual([{ type: "delta", text: "a" }, { type: "delta", text: "b" }, { type: "completed" }]);
@@ -41,6 +43,7 @@ describe("Ollama adapter", () => {
     expect(await provider.health()).toEqual({ status: "healthy" });
     expect(createOllamaPlugin(provider).manifest.provides.map((item) => item.id)).toEqual(["model.text", "model.streaming"]);
   });
+  it("gates model.tools on selected model metadata", async () => { const provider = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async () => response(null, 200, { models: [{ name: "generic-model", capabilities: ["completion", "tools"] }] })); await provider.health(); expect(provider.descriptor.capabilities.map((capability) => capability.id)).toContain("model.tools"); });
   it("reports generic health diagnostics", async () => {
     const unreachable = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async () => { throw new Error("connection refused"); });
     expect(await unreachable.health()).toMatchObject({ status: "unhealthy", reason: "unreachable" });

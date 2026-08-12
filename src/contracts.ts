@@ -69,7 +69,7 @@ export interface ModelToolCall { id: string; toolId: string; input: JsonValue }
 export const modelToolCallSchema = z.object({ id: z.string().min(1), toolId: z.string().min(1), input: jsonValueSchema });
 export interface ModelToolResult { toolCallId: string; toolId: string; output: JsonValue; error?: HarnessError }
 export const modelToolResultSchema = z.object({ toolCallId: z.string().min(1), toolId: z.string().min(1), output: jsonValueSchema, error: harnessErrorSchema.optional() });
-export type ModelMessage = { role: "user"; content: string } | { role: "tool"; toolCallId: string; toolId: string; result: ModelToolResult };
+export type ModelMessage = { role: "user"; content: string } | { role: "assistant"; content?: string; toolCalls?: readonly ModelToolCall[] } | { role: "tool"; toolCallId: string; toolId: string; result: ModelToolResult };
 export const toolId = z.string().regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
 export const toolSchema = jsonValueSchema;
 export interface ToolDescriptor { id: string; name: string; version: string; description?: string; inputSchema: JsonValue; metadata?: JsonValue }
