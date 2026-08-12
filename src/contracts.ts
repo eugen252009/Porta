@@ -40,6 +40,12 @@ export type ModelEvent = { type: "delta"; text: string } | { type: "tool-call"; 
 export interface ModelProvider { readonly descriptor: ModelDescriptor; generate(request: ModelRequest, context: ModelContext): AsyncIterable<ModelEvent> }
 export interface ToolContext extends ExecutionContext {}
 export interface ToolProvider { listTools(context: ToolContext): Promise<readonly ToolDescriptor[]>; invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> }
+export type ToolAuthorizationDecision = "allow" | "deny" | "require-approval";
+export interface ToolAuthorizationRequest { readonly toolCallId: string; readonly invocation: ToolInvocation; readonly descriptor?: ToolDescriptor; readonly context: ToolContext }
+export interface ToolAuthorizationPolicy { authorize(request: ToolAuthorizationRequest): Promise<ToolAuthorizationDecision> }
+export interface ToolApprovalRequest extends ToolAuthorizationRequest { readonly approvalId: string }
+export interface ToolApprovalDecision { readonly approved: boolean; readonly reason?: string }
+export interface ApprovalProvider { approve(request: ToolApprovalRequest): Promise<ToolApprovalDecision> }
 export interface Storage { createSession(session: Session): Promise<void>; getSession(id: string): Promise<Session | undefined>; closeSession(id: string): Promise<void> }
 export interface Session { schemaVersion: 1; id: string; state: "open" | "closed"; createdAt: string }
 export interface InputMessage { schemaVersion: 1; type: "create-session" | "submit-input" | "cancel-execution" | "close-session"; sessionId?: string; input?: string }

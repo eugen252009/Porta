@@ -17,13 +17,14 @@ export class ToolRouter {
       localIds.add(descriptor.id);
       const canonicalId = `${providerId}/${descriptor.id}`;
       if (this.tools.has(canonicalId)) throw failure("CAPABILITY_CONFLICT", `Canonical tool '${canonicalId}' is already registered.`);
-      const canonical = Object.freeze({ ...descriptor, providerId, canonicalId });
+      const canonical = deepFreeze({ ...descriptor, providerId, canonicalId });
       this.tools.set(canonicalId, { provider, descriptor: canonical });
     }
     this.providers.set(providerId, provider);
     return this.listTools();
   }
   listTools(): readonly CanonicalToolDescriptor[] { return [...this.tools.values()].map((entry) => entry.descriptor).sort((left, right) => left.canonicalId.localeCompare(right.canonicalId)); }
+  descriptorFor(toolId: string): CanonicalToolDescriptor | undefined { return this.tools.get(toolId)?.descriptor; }
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
     const parsed = toolInvocationSchema.safeParse(request);
     if (!parsed.success) return { ok: false, error: failure("VALIDATION_FAILED", "Tool invocation is invalid.", false, { issues: parsed.error.issues }).error };
@@ -39,4 +40,12 @@ export class ToolRouter {
       return { ok: false, error: { code: context.signal.aborted ? "CANCELLED" : context.deadline !== undefined && context.deadline <= Date.now() ? "TIMEOUT" : "TOOL_FAILED", message: error instanceof Error ? error.message : "Tool invocation failed.", retryable: false } };
     }
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
 }

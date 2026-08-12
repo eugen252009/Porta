@@ -12,3 +12,4 @@ export * from "./tools.js";
 export * from "./tool-mocks.js";
 export * from "./adapters/tool-mcp.js";
 export * from "./agent.js";
+export * from "./authorization-mocks.js";
