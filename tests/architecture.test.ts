@@ -20,4 +20,5 @@ describe("architecture boundaries", () => {
   it("keeps tool router and contracts protocol-neutral", () => { for (const file of ["src/contracts.ts", "src/tools.ts", "src/tool-mocks.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/mcp|json-rpc|openai|anthropic/i); });
   it("keeps MCP imports confined to the adapter", () => { for (const file of files(join(process.cwd(), "src")).filter((file) => !file.includes("tool-mcp") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/modelcontextprotocol|MCP/i); });
   it("keeps agent orchestration provider-neutral", () => { for (const file of ["src/agent.ts", "src/agent-mocks.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/ollama|mcp|deno|openai|anthropic/i); });
+  it("keeps interactive approval generic", () => { for (const file of ["src/application-gateway.ts", "src/approval-pending.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/ollama|mcp|deno|react|browser|tui|http|websocket/i); expect(readFileSync(join(process.cwd(), "src/agent.ts"), "utf8")).not.toMatch(/application-gateway|ApplicationGateway/); });
 });

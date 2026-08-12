@@ -57,6 +57,7 @@ export class HarnessKernel implements ApplicationGateway {
         const session: Session = { schemaVersion: 1, id: randomUUID(), state: "open", createdAt: new Date().toISOString() };
         await this.storage.createSession(session); yield { type: "SessionCreated", sessionId: session.id }; return;
       }
+      if (command.type === "ResolveApproval") throw failure("CAPABILITY_UNAVAILABLE", "Approval resolution is unavailable in the kernel gateway.");
       const session = await this.storage.getSession(command.sessionId);
       if (!session || session.state !== "open") throw failure("STORAGE_FAILED", `Session '${command.sessionId}' is unavailable.`);
       if (command.type === "CloseSession") { await this.storage.closeSession(command.sessionId); yield { type: "SessionClosed", sessionId: command.sessionId }; return; }
