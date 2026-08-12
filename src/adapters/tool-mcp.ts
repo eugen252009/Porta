@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import AjvModule from "ajv";
 import { z } from "zod";
 import { HarnessFailure, HealthCheckable, HealthStatus, JsonValue, ToolContext, ToolDescriptor, ToolInvocation, ToolProvider, ToolResult, id, jsonValueSchema, failure, toolDescriptorSchema } from "../contracts.js";
 
@@ -18,7 +19,7 @@ const defaultConnectionFactory: McpConnectionFactory = (config) => {
 };
 
 export class MCPToolProvider implements ToolProvider, HealthCheckable {
-  private readonly config: McpStdioConfig; private readonly factory: McpConnectionFactory; private connection?: McpConnection; private connecting?: Promise<McpConnection>; private discovered = new Map<string, ToolDescriptor>();
+  private readonly config: McpStdioConfig; private readonly factory: McpConnectionFactory; private readonly validator = new (AjvModule.default ?? AjvModule)({ allErrors: true }); private connection?: McpConnection; private connecting?: Promise<McpConnection>; private discovered = new Map<string, ToolDescriptor>();
   constructor(config: McpStdioConfig, factory: McpConnectionFactory = defaultConnectionFactory) { this.config = mcpStdioConfigSchema.parse(config); this.factory = factory; }
   get providerId(): string { return this.config.providerId; }
   async connect(): Promise<void> { await this.ensureConnection(); }
@@ -31,7 +32,7 @@ export class MCPToolProvider implements ToolProvider, HealthCheckable {
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
     const localId = this.localId(request.toolId); if (!localId) return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Tool '${request.toolId}' does not belong to provider '${this.config.providerId}'.`).error };
     const controller = new AbortController(); const abort = () => controller.abort(); context.signal.addEventListener("abort", abort, { once: true }); const timeout = context.deadline === undefined ? undefined : Math.max(0, context.deadline - Date.now()); const timer = timeout === undefined ? undefined : setTimeout(() => controller.abort(), timeout);
-    try { if (!this.discovered.has(localId)) await this.listTools(context); const descriptor = this.discovered.get(localId); if (!descriptor) return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Tool '${localId}' is unavailable.`).error }; const result = await (await this.ensureConnection()).callTool(localId, request.input, controller.signal, timeout); const output = result.structuredContent ?? result.content; if (!jsonValueSchema.safeParse(output).success) return { ok: false, error: failure("TOOL_FAILED", "MCP returned a non-serializable tool result.").error }; if (result.isError) return { ok: false, output, error: failure("TOOL_FAILED", "MCP tool reported an execution error.").error }; return { ok: true, output }; }
+    try { if (!this.discovered.has(localId)) await this.listTools(context); const descriptor = this.discovered.get(localId); if (!descriptor) return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Tool '${localId}' is unavailable.`).error }; const validator = this.validator.compile(descriptor.inputSchema as object); if (!validator(request.input)) return { ok: false, error: failure("VALIDATION_FAILED", `Arguments for tool '${localId}' are invalid.`, false, { errors: validator.errors }).error }; const result = await (await this.ensureConnection()).callTool(localId, request.input, controller.signal, timeout); const output = result.structuredContent ?? result.content; if (!jsonValueSchema.safeParse(output).success) return { ok: false, error: failure("TOOL_FAILED", "MCP returned a non-serializable tool result.").error }; if (result.isError) return { ok: false, output, error: failure("TOOL_FAILED", "MCP tool reported an execution error.").error }; return { ok: true, output }; }
     catch (error) { if (error instanceof HarnessFailure) return { ok: false, error: error.error }; if (context.signal.aborted) return { ok: false, error: failure("CANCELLED", "MCP tool invocation was cancelled.").error }; if (context.deadline !== undefined && context.deadline <= Date.now()) return { ok: false, error: failure("TIMEOUT", "MCP tool invocation exceeded its deadline.", true).error }; return { ok: false, error: failure("TOOL_FAILED", error instanceof Error ? error.message : "MCP tool invocation failed.", true).error }; }
     finally { context.signal.removeEventListener("abort", abort); if (timer !== undefined) clearTimeout(timer); }
   }
