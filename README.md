@@ -42,6 +42,8 @@ Durable state is opt-in through `persistence.enabled`. The SQLite adapter stores
 
 Large execution output is retained as an immutable artifact when it exceeds the contextual output bound. Use `artifact/stat`, `artifact/search`, and bounded `artifact/read` explicitly; full artifact contents are never automatically injected into model context. Artifacts are session-scoped and support SHA-256 integrity metadata.
 
+The deterministic self-qualification E2E in `tests/e2e.test.ts` drives a broken temporary Git repository through task creation, search/read, failing and passing execution, artifact recovery, scratchpad notes, compaction, filesystem patching, Git verification, evidence guards, SQLite restart/resume, and approval denial. It uses the canonical ToolRouter path and does not require Ollama, CCC, network access, or Bubblewrap.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Local terminal application
