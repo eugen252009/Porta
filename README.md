@@ -34,6 +34,8 @@ Composable search exposes stable `filesystem/search` and `scratchpad/search` too
 
 Controlled command execution is opt-in through `execution.enabled` and requires a configured filesystem root. Commands use direct argv execution, an explicit allowlist, bounded stdout/stderr, workspace-confined cwd, and the existing authorization path. Sandbox selection prefers an available Linux Bubblewrap backend, then safely falls back to the host backend only when the configured policy permits it. Host-process sandboxing is reported honestly as best-effort/unsupported rather than being presented as a hard sandbox. Bubblewrap is optional; it is not required for read-only Porta startup.
 
+Task progress is session-scoped and in-memory. The `task/create`, `task/get`, and versioned `task/update` tools maintain ordered steps, verification criteria, immutable evidence, and completion guards. Task state is injected as bounded control context and survives conversation compaction independently of conversation history.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Local terminal application

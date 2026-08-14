@@ -5,9 +5,10 @@ import { ApplicationGateway, CommandContext, ConversationStore, ConversationSnap
 import { MemoryConversationStore, sessionFromBase } from "./conversation.js";
 import { ConversationCompactor, DeterministicConversationCompactor } from "./compaction.js";
 import { ScratchpadStore } from "./scratchpad.js";
+import { TaskStore, taskSnapshot } from "./task.js";
 import { ToolRouter } from "./tools.js";
 
-export interface ConversationContextOptions { enabled?: boolean; threshold?: number; keepRecentTurns?: number; maxManifestEntries?: number; maxSummaryChars?: number; compactor?: ConversationCompactor; scratchpad?: ScratchpadStore }
+export interface ConversationContextOptions { enabled?: boolean; threshold?: number; keepRecentTurns?: number; maxManifestEntries?: number; maxSummaryChars?: number; compactor?: ConversationCompactor; scratchpad?: ScratchpadStore; taskStore?: TaskStore }
 export class InteractiveApprovalGateway implements ApplicationGateway {
   private readonly active = new Map<string, AgentExecution>();
   constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter, private readonly pending: PendingApprovalProvider, private readonly policy: ToolAuthorizationPolicy, private readonly limits = { maxSteps: 8, maxToolCalls: 16 }, private readonly conversations: ConversationStore = new MemoryConversationStore(), private readonly contextOptions: ConversationContextOptions = {}) {}
@@ -62,16 +63,19 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
   async shutdown(): Promise<void> { await Promise.all([...this.active.values()].map((execution) => execution.cancel())); this.active.clear(); for (const id of this.conversations.openSessionIds()) await this.conversations.closeSession(id); }
   private async prepareContext(sessionId: string, context: ModelContext): Promise<{ history: readonly import("./contracts.js").ModelMessage[]; control: readonly import("./contracts.js").ModelControlMessage[] }> {
     const snapshot = await this.conversations.snapshot(sessionId); const threshold = this.contextOptions.threshold;
-    if (!this.contextOptions.enabled || threshold === undefined || snapshot.turns.length <= threshold) return { history: snapshot.history, control: [] };
+    const taskControl = await this.taskControl(sessionId);
+    if (!this.contextOptions.enabled || threshold === undefined || snapshot.turns.length <= threshold) return { history: snapshot.history, control: taskControl };
     const keep = Math.min(this.contextOptions.keepRecentTurns ?? 4, threshold); const oldTurns = snapshot.turns.slice(0, Math.max(0, snapshot.turns.length - keep)); const recent = snapshot.turns.slice(-keep);
-    if (!oldTurns.length) return { history: recent.flatMap((turn) => turn.messages), control: [] };
+    if (!oldTurns.length) return { history: recent.flatMap((turn) => turn.messages), control: taskControl };
     let summary: string;
     try { const compactor = this.contextOptions.compactor ?? new DeterministicConversationCompactor(); summary = (await compactor.compact({ turns: oldTurns, compactedThrough: snapshot.turns.length - keep, maxChars: this.contextOptions.maxSummaryChars }, context)).summary; }
-    catch (error) { if (isCancellation(error, context)) throw error; return { history: recent.flatMap((turn) => turn.messages), control: [] }; }
+    catch (error) { if (isCancellation(error, context)) throw error; return { history: recent.flatMap((turn) => turn.messages), control: taskControl }; }
     const control: import("./contracts.js").ModelControlMessage[] = [{ role: "system", content: `Conversation history was compacted.\n\nCompacted summary:\n${summary}` }, { role: "system", content: "Relevant working notes may exist in the scratchpad. Use scratchpad/search or scratchpad/list to locate relevant notes, and scratchpad/read only the entries you need before making assumptions." }];
     if (this.contextOptions.scratchpad) { const entries = await this.contextOptions.scratchpad.list(sessionId); const limit = this.contextOptions.maxManifestEntries ?? 20; const shown = entries.slice(0, limit); const suffix = entries.length > limit ? `\n... ${entries.length - limit} more entries available via scratchpad/list` : ""; control.push({ role: "system", content: `Available scratchpad entries:\n${shown.map((entry) => `- ${entry.key} (${entry.bytes} bytes)`).join("\n") || "- none"}${suffix}` }); }
+    if (taskControl.length) control.push(...taskControl);
     return { history: recent.flatMap((turn) => turn.messages), control };
   }
+  private async taskControl(sessionId: string): Promise<readonly import("./contracts.js").ModelControlMessage[]> { const task = await this.contextOptions.taskStore?.get(sessionId); return task ? [{ role: "system", content: taskSnapshot(task) }] : []; }
 }
 function isCancellation(error: unknown, context: ModelContext): boolean { return context.signal.aborted || (error instanceof HarnessFailure && (error.error.code === "CANCELLED" || error.error.code === "TIMEOUT")); }
 function normalizeError(error: unknown): import("./contracts.js").HarnessError { if (error instanceof HarnessFailure) return error.error; return failure("MODEL_FAILED", error instanceof Error ? error.message : "Conversation context preparation failed.").error; }
