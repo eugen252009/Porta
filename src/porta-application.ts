@@ -1,6 +1,7 @@
 import { MCPToolProvider } from "./adapters/tool-mcp.js";
 import { OllamaModelProvider } from "./adapters/model-ollama.js";
-import { InteractiveApprovalGateway } from "./application-gateway.js";
+import { ConversationContextOptions, InteractiveApprovalGateway } from "./application-gateway.js";
+import { ConversationCompactor, ModelConversationCompactor } from "./compaction.js";
 import { AllowAllToolAuthorizationPolicy, StaticToolAuthorizationPolicy } from "./authorization-mocks.js";
 import { PortaConfig } from "./porta-config.js";
 import { ConversationStore, ModelProvider, ToolContext, ToolProvider } from "./contracts.js";
@@ -23,7 +24,7 @@ export interface PortaApplication {
   shutdown(): Promise<void>;
 }
 
-export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
@@ -45,7 +46,9 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     const pending = new PendingApprovalProvider();
     const conversations = factories.conversations ?? new MemoryConversationStore(config.conversation);
     const policy = config.authorization.mode === "allow-all" ? new AllowAllToolAuthorizationPolicy() : new StaticToolAuthorizationPolicy("require-approval");
-    const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 }, conversations);
+    const compaction = config.conversation.compaction;
+    const contextOptions: ConversationContextOptions = compaction ? { enabled: compaction.enabled, threshold: config.conversation.maxTurns, keepRecentTurns: compaction.keepRecentTurns, maxManifestEntries: compaction.maxManifestEntries, compactor: factories.compactor ?? new ModelConversationCompactor(model), scratchpad } : {};
+    const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 }, conversations, contextOptions);
     let stopped = false;
     return { gateway, pendingApprovals: pending, toolRouter: router, conversations, scratchpad, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...mcpProviders].reverse()) await provider.close(); } };
   } catch (error) { for (const provider of [...healthy].reverse()) await provider.close?.(); throw error; }

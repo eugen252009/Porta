@@ -21,7 +21,8 @@ export function mapToolsToOllama(tools: readonly ToolDescriptor[]): { definition
 }
 export function mapRequestToOllama(request: ModelRequest, model: string): OllamaChatRequest {
   const mapped = mapToolsToOllama(request.tools ?? []); const mapping = new Map(mapped.mappings.map((entry) => [entry.nativeName, entry.canonicalId])); const tools = mapped.definitions;
-  const messages: OllamaMessage[] = request.messages?.length ? [] : [{ role: "user", content: request.input }];
+  const messages: OllamaMessage[] = (request.control ?? []).map((message) => ({ role: "system", content: message.content }));
+  if (!request.messages?.length) messages.push({ role: "user", content: request.input });
   for (const message of request.messages ?? []) {
     if (message.role === "user") messages.push({ role: "user", content: message.content });
     else if (message.role === "assistant") messages.push({ role: "assistant", ...(message.content ? { content: message.content } : {}), ...(message.toolCalls ? { tool_calls: message.toolCalls.map((call) => ({ function: { name: [...mapping.entries()].find(([, id]) => id === call.toolId)?.[0] ?? call.toolId, arguments: call.input } })) } : {}) });
@@ -138,7 +139,7 @@ export function createOllamaPlugin(provider: OllamaModelProvider): HarnessPlugin
 
 interface OllamaToolDefinition { type: "function"; function: { name: string; description: string; parameters: JsonValue } }
 interface OllamaChatRequest { model: string; messages: readonly OllamaMessage[]; stream: true; tools?: readonly OllamaToolDefinition[] }
-type OllamaMessage = { role: "user" | "assistant" | "tool"; content?: string; tool_name?: string; tool_calls?: readonly { function: { name: string; arguments: JsonValue } }[] };
+type OllamaMessage = { role: "system" | "user" | "assistant" | "tool"; content?: string; tool_name?: string; tool_calls?: readonly { function: { name: string; arguments: JsonValue } }[] };
 function serializeToolResult(result: { output: JsonValue; error?: unknown }): string { return JSON.stringify(result.error ? { error: result.error, output: result.output } : result.output); }
 function isJsonValue(value: unknown): value is JsonValue { return value === null || typeof value === "string" || typeof value === "number" && Number.isFinite(value) || typeof value === "boolean" || Array.isArray(value) && value.every(isJsonValue) || typeof value === "object" && value !== null && Object.values(value).every(isJsonValue); }
 function mergeJsonObjects(left: JsonValue, right: JsonValue): JsonValue { if (typeof left === "object" && left !== null && !Array.isArray(left) && typeof right === "object" && right !== null && !Array.isArray(right)) return { ...left, ...right }; return right; }

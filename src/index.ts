@@ -19,6 +19,7 @@ export * from "./porta-config.js";
 export * from "./porta-application.js";
 export * from "./conversation.js";
 export * from "./content-reducer.js";
+export * from "./compaction.js";
 export * from "./filesystem.js";
 export * from "./scratchpad.js";
 export * from "./terminal.js";

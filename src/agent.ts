@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AllowAllToolAuthorizationPolicy } from "./authorization-mocks.js";
-import { ApprovalProvider, HarnessFailure, ModelContext, ModelMessage, ModelProvider, ModelRequest, ModelToolCall, ModelToolResult, ToolAuthorizationPolicy, ToolContext, ToolDescriptor, ToolResult, failure, modelToolCallSchema } from "./contracts.js";
+import { ApprovalProvider, HarnessFailure, ModelContext, ModelControlMessage, ModelMessage, ModelProvider, ModelRequest, ModelToolCall, ModelToolResult, ToolAuthorizationPolicy, ToolContext, ToolDescriptor, ToolResult, failure, modelToolCallSchema } from "./contracts.js";
 import { ToolRouter } from "./tools.js";
 
 export interface AgentLimits { maxSteps: number; maxToolCalls: number }
@@ -11,12 +11,12 @@ export interface AgentAuthorizationOptions { policy?: ToolAuthorizationPolicy; a
 
 export class AgentOrchestrator {
   constructor(private readonly model: ModelProvider, private readonly tools?: ToolRouter, private readonly limits: AgentLimits = { maxSteps: 8, maxToolCalls: 16 }, private readonly authorization: AgentAuthorizationOptions = {}) {}
-  create(input: string, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], history: readonly ModelMessage[] = []): AgentExecution { return new ManagedAgent(this.model, this.tools, this.limits, this.authorization, input, context, descriptors, history); }
+  create(input: string, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], history: readonly ModelMessage[] = [], control: readonly ModelControlMessage[] = []): AgentExecution { return new ManagedAgent(this.model, this.tools, this.limits, this.authorization, input, context, descriptors, history, control); }
 }
 
 class ManagedAgent implements AgentExecution {
   readonly id = randomUUID(); private readonly queue = new AsyncQueue<AgentEvent>(); private readonly completion: Promise<AgentExecutionResult>; private resolveResult!: (result: AgentExecutionResult) => void; private terminalCause?: "cancelled" | "timed-out" | "limit-reached"; private terminal = false; private readonly controller = new AbortController(); private running: Promise<void>;
-  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter | undefined, private readonly limits: AgentLimits, private readonly authorization: AgentAuthorizationOptions, private readonly input: string, private readonly parent: ModelContext, private readonly descriptors: readonly ToolDescriptor[], private readonly initialHistory: readonly ModelMessage[]) { this.completion = new Promise((resolve) => { this.resolveResult = resolve; }); parent.signal.addEventListener("abort", () => this.stop("cancelled"), { once: true }); if (parent.deadline !== undefined) setTimeout(() => this.stop("timed-out"), Math.max(0, parent.deadline - Date.now())); this.running = this.run(); }
+  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter | undefined, private readonly limits: AgentLimits, private readonly authorization: AgentAuthorizationOptions, private readonly input: string, private readonly parent: ModelContext, private readonly descriptors: readonly ToolDescriptor[], private readonly initialHistory: readonly ModelMessage[], private readonly control: readonly ModelControlMessage[]) { this.completion = new Promise((resolve) => { this.resolveResult = resolve; }); parent.signal.addEventListener("abort", () => this.stop("cancelled"), { once: true }); if (parent.deadline !== undefined) setTimeout(() => this.stop("timed-out"), Math.max(0, parent.deadline - Date.now())); this.running = this.run(); }
   events(): AsyncIterable<AgentEvent> { return this.queue; }
   async cancel(): Promise<void> { this.stop("cancelled"); await this.running; }
   result(): Promise<AgentExecutionResult> { return this.completion; }
@@ -31,7 +31,7 @@ class ManagedAgent implements AgentExecution {
       for (let step = 1; step <= this.limits.maxSteps; step++) {
         if (this.terminalCause) return this.finishCause();
         this.push({ type: "model-started", step });
-        const request: ModelRequest = { schemaVersion: 1, requestId: randomUUID(), input: this.input, messages: [...messages], tools: this.descriptors };
+        const request: ModelRequest = { schemaVersion: 1, requestId: randomUUID(), input: this.input, messages: [...messages], control: this.control, tools: this.descriptors };
         const turnCalls: ModelToolCall[] = []; let turnText = "";
         for await (const event of this.model.generate(request, this.childContext())) {
           if (this.terminalCause) return this.finishCause();

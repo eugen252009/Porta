@@ -30,7 +30,7 @@ export class MemoryConversationStore implements ConversationStore {
     const turns = entry.turns.map(cloneTurn);
     const maxTurns = this.budget.maxTurns;
     const included = maxTurns === undefined ? turns : turns.slice(Math.max(0, turns.length - maxTurns));
-    return freeze({ history: included.flatMap((turn) => turn.messages), turnsAvailable: turns.length, turnsIncluded: included.length, turnsDropped: turns.length - included.length });
+    return freeze({ history: included.flatMap((turn) => turn.messages), turns, turnsAvailable: turns.length, turnsIncluded: included.length, turnsDropped: turns.length - included.length });
   }
   openSessionIds(): readonly string[] { return [...this.sessions.values()].filter((entry) => entry.session.state === "open").map((entry) => entry.session.id); }
 }

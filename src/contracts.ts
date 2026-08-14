@@ -34,7 +34,8 @@ export interface HarnessPlugin { readonly manifest: PluginManifest; register(reg
 export interface ExecutionContext { readonly traceId: string; readonly sessionId: string; readonly executionId: string; readonly signal: AbortSignal; readonly deadline?: number }
 export interface CommandContext { readonly signal?: AbortSignal; readonly deadline?: number; readonly traceId?: string }
 export interface ModelDescriptor { readonly id: string; readonly version: string; readonly capabilities: readonly CapabilityDescriptor[] }
-export interface ModelRequest { schemaVersion: 1; requestId: string; input: string; messages?: readonly ModelMessage[]; tools?: readonly ToolDescriptor[] }
+export interface ModelControlMessage { readonly role: "system"; readonly content: string }
+export interface ModelRequest { schemaVersion: 1; requestId: string; input: string; messages?: readonly ModelMessage[]; control?: readonly ModelControlMessage[]; tools?: readonly ToolDescriptor[] }
 export interface ModelContext extends ExecutionContext {}
 export type ModelEvent = { type: "delta"; text: string } | { type: "tool-call"; call: ModelToolCall } | { type: "completed" };
 export interface ModelProvider { readonly descriptor: ModelDescriptor; generate(request: ModelRequest, context: ModelContext): AsyncIterable<ModelEvent> }
@@ -54,7 +55,7 @@ export interface Session { schemaVersion: 1; id: string; state: "open" | "closed
 export interface ConversationTurn { readonly messages: readonly ModelMessage[] }
 export interface ConversationSession extends Session { readonly history: readonly ModelMessage[]; readonly turns: readonly ConversationTurn[] }
 export interface ConversationBudget { readonly maxTurns?: number }
-export interface ConversationSnapshot { readonly history: readonly ModelMessage[]; readonly turnsAvailable: number; readonly turnsIncluded: number; readonly turnsDropped: number }
+export interface ConversationSnapshot { readonly history: readonly ModelMessage[]; readonly turns: readonly ConversationTurn[]; readonly turnsAvailable: number; readonly turnsIncluded: number; readonly turnsDropped: number }
 export interface ConversationStore {
   createSession(session: ConversationSession): Promise<void>;
   getSession(id: string): Promise<ConversationSession | undefined>;

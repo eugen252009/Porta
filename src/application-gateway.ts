@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { AgentEvent, AgentExecution, AgentOrchestrator } from "./agent.js";
 import { PendingApprovalEvent, PendingApprovalProvider } from "./approval-pending.js";
-import { ApplicationGateway, CommandContext, ConversationStore, KernelCommand, KernelEvent, ModelContext, ModelProvider, ToolAuthorizationPolicy, failure, resolveApprovalCommandSchema } from "./contracts.js";
+import { ApplicationGateway, CommandContext, ConversationStore, ConversationSnapshot, KernelCommand, KernelEvent, ModelContext, ModelProvider, ToolAuthorizationPolicy, failure, HarnessFailure, resolveApprovalCommandSchema } from "./contracts.js";
 import { MemoryConversationStore, sessionFromBase } from "./conversation.js";
+import { ConversationCompactor, DeterministicConversationCompactor } from "./compaction.js";
+import { ScratchpadStore } from "./scratchpad.js";
 import { ToolRouter } from "./tools.js";
 
+export interface ConversationContextOptions { enabled?: boolean; threshold?: number; keepRecentTurns?: number; maxManifestEntries?: number; maxSummaryChars?: number; compactor?: ConversationCompactor; scratchpad?: ScratchpadStore }
 export class InteractiveApprovalGateway implements ApplicationGateway {
   private readonly active = new Map<string, AgentExecution>();
-  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter, private readonly pending: PendingApprovalProvider, private readonly policy: ToolAuthorizationPolicy, private readonly limits = { maxSteps: 8, maxToolCalls: 16 }, private readonly conversations: ConversationStore = new MemoryConversationStore()) {}
+  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter, private readonly pending: PendingApprovalProvider, private readonly policy: ToolAuthorizationPolicy, private readonly limits = { maxSteps: 8, maxToolCalls: 16 }, private readonly conversations: ConversationStore = new MemoryConversationStore(), private readonly contextOptions: ConversationContextOptions = {}) {}
   async *execute(command: KernelCommand, context: CommandContext = {}): AsyncIterable<KernelEvent> {
     if (command.type === "CreateSession") {
       const sessionId = randomUUID();
@@ -27,13 +30,15 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
     if (command.type === "CancelExecution") { await this.active.get(command.sessionId)?.cancel(); return; }
     if (this.active.has(command.sessionId)) { yield { type: "Error", error: failure("CAPABILITY_CONFLICT", `Session '${command.sessionId}' already has an active execution.`).error }; return; }
 
-    const snapshot = await this.conversations.snapshot(command.sessionId);
     const gatewayExecutionId = randomUUID();
     const controller = new AbortController();
-    if (context.signal) context.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    if (context.signal?.aborted) controller.abort(); else if (context.signal) context.signal.addEventListener("abort", () => controller.abort(), { once: true });
     const modelContext: ModelContext = { traceId: context.traceId ?? randomUUID(), sessionId: command.sessionId, executionId: gatewayExecutionId, signal: controller.signal, deadline: context.deadline };
+    let prepared: { history: readonly import("./contracts.js").ModelMessage[]; control: readonly import("./contracts.js").ModelControlMessage[] };
+    try { prepared = await this.prepareContext(command.sessionId, modelContext); }
+    catch (error) { yield { type: "Error", error: normalizeError(error) }; return; }
     const approvalEvents = this.pending.subscribe();
-    const execution = new AgentOrchestrator(this.model, this.tools, this.limits, { policy: this.policy, approvalProvider: this.pending }).create(command.input, modelContext, this.tools.listTools(), snapshot.history);
+    const execution = new AgentOrchestrator(this.model, this.tools, this.limits, { policy: this.policy, approvalProvider: this.pending }).create(command.input, modelContext, this.tools.listTools(), prepared.history, prepared.control);
     const executionId = execution.id;
     this.active.set(command.sessionId, execution);
     yield { type: "ExecutionStarted", executionId };
@@ -55,7 +60,21 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
     }
   }
   async shutdown(): Promise<void> { await Promise.all([...this.active.values()].map((execution) => execution.cancel())); this.active.clear(); for (const id of this.conversations.openSessionIds()) await this.conversations.closeSession(id); }
+  private async prepareContext(sessionId: string, context: ModelContext): Promise<{ history: readonly import("./contracts.js").ModelMessage[]; control: readonly import("./contracts.js").ModelControlMessage[] }> {
+    const snapshot = await this.conversations.snapshot(sessionId); const threshold = this.contextOptions.threshold;
+    if (!this.contextOptions.enabled || threshold === undefined || snapshot.turns.length <= threshold) return { history: snapshot.history, control: [] };
+    const keep = Math.min(this.contextOptions.keepRecentTurns ?? 4, threshold); const oldTurns = snapshot.turns.slice(0, Math.max(0, snapshot.turns.length - keep)); const recent = snapshot.turns.slice(-keep);
+    if (!oldTurns.length) return { history: recent.flatMap((turn) => turn.messages), control: [] };
+    let summary: string;
+    try { const compactor = this.contextOptions.compactor ?? new DeterministicConversationCompactor(); summary = (await compactor.compact({ turns: oldTurns, compactedThrough: snapshot.turns.length - keep, maxChars: this.contextOptions.maxSummaryChars }, context)).summary; }
+    catch (error) { if (isCancellation(error, context)) throw error; return { history: recent.flatMap((turn) => turn.messages), control: [] }; }
+    const control: import("./contracts.js").ModelControlMessage[] = [{ role: "system", content: `Conversation history was compacted.\n\nCompacted summary:\n${summary}` }, { role: "system", content: "Relevant working notes may exist in the scratchpad. Check the scratchpad if you need more information about a topic before making assumptions. Read only the entries you need." }];
+    if (this.contextOptions.scratchpad) { const entries = await this.contextOptions.scratchpad.list(sessionId); const limit = this.contextOptions.maxManifestEntries ?? 20; const shown = entries.slice(0, limit); const suffix = entries.length > limit ? `\n... ${entries.length - limit} more entries available via scratchpad/list` : ""; control.push({ role: "system", content: `Available scratchpad entries:\n${shown.map((entry) => `- ${entry.key} (${entry.bytes} bytes)`).join("\n") || "- none"}${suffix}` }); }
+    return { history: recent.flatMap((turn) => turn.messages), control };
+  }
 }
+function isCancellation(error: unknown, context: ModelContext): boolean { return context.signal.aborted || (error instanceof HarnessFailure && (error.error.code === "CANCELLED" || error.error.code === "TIMEOUT")); }
+function normalizeError(error: unknown): import("./contracts.js").HarnessError { if (error instanceof HarnessFailure) return error.error; return failure("MODEL_FAILED", error instanceof Error ? error.message : "Conversation context preparation failed.").error; }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = []; private waiter?: (result: IteratorResult<T>) => void; private closed = false;
