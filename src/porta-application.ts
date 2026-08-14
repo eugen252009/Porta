@@ -14,6 +14,8 @@ import { MutationEngine } from "./mutation.js";
 import { ExecutionToolProvider } from "./execution.js";
 import { HostProcessRuntime } from "./adapters/runtime-host-process.js";
 import { HostProcessSandbox } from "./adapters/sandbox-host-process.js";
+import { BubblewrapSandbox } from "./adapters/sandbox-bubblewrap.js";
+import { selectSandbox } from "./sandbox-selection.js";
 import { CCCSearchEngine, GrepSearchEngine, LinearTextSearchEngine, RipgrepSearchEngine, SearchEngine, selectSearchEngine } from "./search.js";
 import { MemoryScratchpadStore, ScratchpadSearchSource, ScratchpadStore, ScratchpadToolProvider } from "./scratchpad.js";
 import { HarnessFailure, RuntimeHost, SandboxProvider } from "./contracts.js";
@@ -32,7 +34,7 @@ export interface PortaApplication {
   shutdown(): Promise<void>;
 }
 
-export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
@@ -43,7 +45,15 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
   const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
   const filesystemEngine = filesystemRoot ? selectSearchEngine(new FilesystemSearchSource(filesystemRoot, config.filesystem?.maxReadBytes ?? 8 * 1024 * 1024), searchCandidates) ?? new LinearTextSearchEngine() : undefined;
   const filesystem = config.filesystem ? new FilesystemToolProvider(config.filesystem, factories.contentReducer ?? new ModelContentReducer(model), filesystemEngine, factories.mutationEngine) : undefined;
-  const execution = config.execution?.enabled ? (() => { if (!config.filesystem?.root) throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "Execution requires a configured filesystem root.", retryable: false }); return new ExecutionToolProvider(factories.executionRuntime ?? new HostProcessRuntime(), factories.executionSandbox ?? new HostProcessSandbox(), { workspaceRoot: config.filesystem.root, allowedCommands: config.execution.allowedCommands, defaultTimeoutMs: config.execution.defaultTimeoutMs, maxStdoutBytes: config.execution.maxStdoutBytes, maxStderrBytes: config.execution.maxStderrBytes, policy: { filesystem: config.execution.filesystem, network: config.execution.network, codeLoading: config.execution.codeLoading }, environment: config.execution.environment, allowedEnvironmentKeys: config.execution.allowedEnvironmentKeys }); })() : undefined;
+  const execution = config.execution?.enabled ? await (async () => {
+    const executionConfig = config.execution!;
+    if (!config.filesystem?.root || !filesystemRoot) throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "Execution requires a configured filesystem root.", retryable: false });
+    const runtime = factories.executionRuntime ?? new HostProcessRuntime();
+    const host = new HostProcessSandbox();
+    const candidates = factories.executionSandboxes ?? [new BubblewrapSandbox({ workspaceRoot: filesystemRoot }), host];
+    const sandbox = factories.executionSandbox ?? (await selectSandbox({ filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, candidates.map((provider) => { const available = (provider as SandboxProvider & { available?: () => Promise<boolean> }).available; return available ? { provider, available: () => available.call(provider) } : { provider }; }), executionConfig.sandbox.preference)).provider;
+    return new ExecutionToolProvider(runtime, sandbox, { workspaceRoot: filesystemRoot, allowedCommands: executionConfig.allowedCommands, defaultTimeoutMs: executionConfig.defaultTimeoutMs, maxStdoutBytes: executionConfig.maxStdoutBytes, maxStderrBytes: executionConfig.maxStderrBytes, policy: { filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, environment: executionConfig.environment, allowedEnvironmentKeys: executionConfig.allowedEnvironmentKeys });
+  })() : undefined;
   const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), ...(execution ? [{ id: "execution", provider: execution as ToolProvider }] : []), { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }];
   const modelManifest = { schemaVersion: 1 as const, id: "model.ollama", version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
   const manifests = [modelManifest, ...registrations.map((registration) => ({ schemaVersion: 1 as const, id: `tools.${registration.id}`, version: "1", provides: [{ id: "tools.discovery", version: "1" }, { id: "tools.invoke", version: "1" }], requires: [] }))];

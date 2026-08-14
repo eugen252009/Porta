@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { executionId } from "../runtime.js";
-import { ExecutionContext, ExecutionRequest, ExecutionResult, HarnessError, HarnessPlugin, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxSession, failure } from "../contracts.js";
+import { ExecutionContext, ExecutionRequest, ExecutionResult, HarnessError, HarnessPlugin, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxSession, failure, sandboxBindingSchema } from "../contracts.js";
+import { processWrapperBindingKind, processWrapperPayloadSchema } from "../process-wrapper.js";
 
 export interface HostProcess { readonly stdin: { end(data?: string): void }; readonly stdout: AsyncIterable<Buffer>; readonly stderr: AsyncIterable<Buffer>; readonly exited: Promise<{ code: number | null; signal?: string | null }>; kill(signal?: NodeJS.Signals): void }
 export type HostProcessLauncher = (executable: string, args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => HostProcess;
@@ -8,11 +9,12 @@ const defaultLauncher: HostProcessLauncher = (executable, args, options) => { co
 
 export class HostProcessRuntime implements RuntimeHost {
   readonly descriptor = { id: "runtime.host-process", version: "1" };
+  readonly supportedBindingKinds = [processWrapperBindingKind];
   constructor(private readonly launch: HostProcessLauncher = defaultLauncher) {}
-  async createExecution(request: ExecutionRequest, context: ExecutionContext, _sandbox: SandboxSession): Promise<RuntimeExecution> {
+  async createExecution(request: ExecutionRequest, context: ExecutionContext, sandbox: SandboxSession): Promise<RuntimeExecution> {
     if (!request.executable) throw failure("VALIDATION_FAILED", "Host process execution requires an executable.");
     if (!request.workingDirectory) throw failure("VALIDATION_FAILED", "Host process execution requires a working directory.");
-    let process: HostProcess; try { process = this.launch(request.executable, [...(request.args ?? [])], { cwd: request.workingDirectory, env: request.environment ?? {} }); } catch (error) { throw failure("RUNTIME_FAILED", "Process could not be started.", true, { cause: error instanceof Error ? error.message : "spawn failure" }); }
+    let executable = request.executable; let args = [...(request.args ?? [])]; if (sandbox.binding) { const binding = sandboxBindingSchema.safeParse(sandbox.binding); if (!binding.success || binding.data.kind !== processWrapperBindingKind) throw failure("POLICY_VIOLATION", "Host process runtime received an unsupported sandbox binding."); const payload = processWrapperPayloadSchema.safeParse(binding.data.payload); if (!payload.success) throw failure("SANDBOX_FAILED", "Host process runtime received an invalid wrapper binding.", false, { issues: payload.error.issues }); executable = payload.data.wrapperExecutable; args = [...payload.data.argsPrefix, ...(payload.data.cwdFlag ? [payload.data.cwdFlag, request.workingDirectory] : []), "--", request.executable, ...args]; } let process: HostProcess; try { process = this.launch(executable, args, { cwd: request.workingDirectory, env: request.environment ?? {} }); } catch (error) { throw failure("RUNTIME_FAILED", "Process could not be started.", true, { cause: error instanceof Error ? error.message : "spawn failure" }); }
     if (request.stdin !== undefined) process.stdin.end(request.stdin); else process.stdin.end(); return new HostProcessExecution(process, context);
   }
 }

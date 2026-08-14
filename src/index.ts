@@ -28,4 +28,7 @@ export * from "./workspace.js";
 export * from "./execution.js";
 export * from "./adapters/runtime-host-process.js";
 export * from "./adapters/sandbox-host-process.js";
+export * from "./adapters/sandbox-bubblewrap.js";
+export * from "./process-wrapper.js";
+export * from "./sandbox-selection.js";
 export * from "./terminal.js";
