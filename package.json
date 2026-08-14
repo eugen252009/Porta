@@ -6,7 +6,8 @@
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "harness": "npm run build && node dist/src/main.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

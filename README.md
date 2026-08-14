@@ -23,3 +23,13 @@ MCP is integrated as an optional stdio-only `MCPToolProvider` using the official
 Agent execution is a provider-neutral loop over `ModelProvider` and `ToolRouter`. It owns canonical tool-call IDs, sequential tool execution, tool-result correlation, execution-local deduplication, step/tool-call limits, cancellation, deadlines, and lifecycle events. Tool failures are model-visible results; global cancellation, deadlines, malformed model calls, and limits terminate the execution. No model adapter or protocol adapter is invoked directly by the orchestrator.
 
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
+
+## Local terminal harness
+
+Start the production shell with `npm run harness`. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `HARNESS_CONFIG` to a JSON file using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), and optional agent limits. For example:
+
+```json
+{"model":{"provider":"ollama","baseUrl":"http://localhost:11434","model":"your-local-model"},"authorization":{"mode":"require-approval"},"tools":[]}
+```
+
+The shell streams canonical application events, accepts `y`/`yes` for approval, denies other approval input (including EOF), accepts `/cancel`, and treats EOF as graceful shutdown. A built invocation is `npm run build && node dist/src/main.js`.
