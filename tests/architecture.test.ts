@@ -25,4 +25,5 @@ describe("architecture boundaries", () => {
   it("keeps filesystem and scratchpad adapters generic", () => { for (const file of ["src/filesystem.ts", "src/scratchpad.ts", "src/content-reducer.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/ollama|mcp|deno|modelcontextprotocol/i); });
   it("keeps compaction independent from scratchpad and filesystem mutation", () => { const source = readFileSync(join(process.cwd(), "src/compaction.ts"), "utf8"); expect(source).not.toMatch(/ScratchpadStore|FilesystemToolProvider|write|append|delete/i); });
   it("keeps search engines source-neutral", () => { const source = readFileSync(join(process.cwd(), "src/search.ts"), "utf8"); expect(source).not.toMatch(/ScratchpadStore|ConversationStore|FilesystemToolProvider|OllamaModelProvider|MCPToolProvider/i); });
+  it("keeps mutation engine independent from agent and providers", () => { const source = readFileSync(join(process.cwd(), "src/mutation.ts"), "utf8"); expect(source).not.toMatch(/AgentExecution|Ollama|MCP|Scratchpad|Conversation/); });
 });

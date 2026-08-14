@@ -1,15 +1,18 @@
 import { promises as fs } from "node:fs";
-import { realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 import { ContentReductionRequest, ContentReductionResult, ContentReducer } from "./content-reducer.js";
 import { LinearTextSearchEngine, SearchDocument, SearchEngine, SearchQuery, SearchResult, SearchSource } from "./search.js";
 import { JsonValue, ModelContext, ModelProvider, ToolContext, ToolDescriptor, ToolInvocation, ToolProvider, ToolResult, failure } from "./contracts.js";
+import { DirectFilesystemMutationEngine, MutationEngine, MutationPatchRequest, MutationWriteRequest, contentHash } from "./mutation.js";
+import { WorkspaceBoundary } from "./workspace.js";
 
-export interface FilesystemProviderConfig { root: string; maxExactContextBytes?: number; maxReadBytes?: number; maxSummaryChars?: number }
-const configSchema = z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().default(65536), maxReadBytes: z.number().int().positive().default(8 * 1024 * 1024), maxSummaryChars: z.number().int().positive().default(12000) });
+export interface FilesystemProviderConfig { root: string; maxExactContextBytes?: number; maxReadBytes?: number; maxSummaryChars?: number; mutation?: { enabled?: boolean; maxWriteBytes?: number; maxPatchTargetBytes?: number } }
+const configSchema = z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().default(65536), maxReadBytes: z.number().int().positive().default(8 * 1024 * 1024), maxSummaryChars: z.number().int().positive().default(12000), mutation: z.object({ enabled: z.boolean().default(false), maxWriteBytes: z.number().int().positive().default(2 * 1024 * 1024), maxPatchTargetBytes: z.number().int().positive().default(8 * 1024 * 1024) }).optional() });
 const readSchema = z.object({ path: z.string().min(1), mode: z.enum(["exact", "summary"]).default("exact"), range: z.object({ startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).optional() }).strict();
 const pathSchema = z.object({ path: z.string().min(1) }).strict();
+const writeSchema = z.object({ path: z.string().min(1), content: z.string(), mode: z.enum(["create", "replace", "create-or-replace"]), expectedHash: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
+const patchSchema = z.object({ path: z.string().min(1), edits: z.array(z.object({ oldText: z.string().min(1), newText: z.string(), expectedOccurrences: z.number().int().positive().optional() })).min(1), expectedHash: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
 const searchSchema = z.object({ query: z.string().min(1), mode: z.enum(["text", "regex"]).optional(), limit: z.number().int().positive().optional(), maxExcerptChars: z.number().int().positive().optional() }).strict();
 
 export class FilesystemSearchSource implements SearchSource {
@@ -21,13 +24,16 @@ export class FilesystemSearchSource implements SearchSource {
 
 export class FilesystemToolProvider implements ToolProvider {
   readonly providerId = "filesystem";
-  private readonly config: Required<FilesystemProviderConfig>;
+  private readonly config: z.infer<typeof configSchema>;
   private readonly root: string;
+  private readonly boundary: WorkspaceBoundary;
   private readonly searchSource: FilesystemSearchSource;
-  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer(), private readonly searchEngine: SearchEngine = new LinearTextSearchEngine()) {
+  private readonly mutationEngine?: MutationEngine;
+  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer(), private readonly searchEngine: SearchEngine = new LinearTextSearchEngine(), mutationEngine?: MutationEngine) {
     this.config = configSchema.parse(config);
-    this.root = realpathSync(resolve(this.config.root));
+    this.boundary = new WorkspaceBoundary(this.config.root); this.root = this.boundary.root;
     this.searchSource = new FilesystemSearchSource(this.root, this.config.maxReadBytes);
+    if (this.config.mutation?.enabled) this.mutationEngine = mutationEngine ?? new DirectFilesystemMutationEngine(this.boundary, { maxWriteBytes: this.config.mutation.maxWriteBytes, maxPatchTargetBytes: this.config.mutation.maxPatchTargetBytes });
   }
   async listTools(_context: ToolContext): Promise<readonly ToolDescriptor[]> {
     return [
@@ -35,6 +41,7 @@ export class FilesystemToolProvider implements ToolProvider {
       { id: "list_directory", name: "filesystem/list_directory", version: "1", description: "List one directory deterministically without recursive traversal.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } } },
       { id: "stat", name: "filesystem/stat", version: "1", description: "Return safe metadata for a file or directory.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } } },
       { id: "search", name: "filesystem/search", version: "1", description: "Search the configured workspace for relevant text before calling read_file. Results are bounded excerpts with paths and line numbers.", inputSchema: { type: "object", required: ["query"], properties: { query: { type: "string" }, mode: { enum: ["text", "regex"] }, limit: { type: "integer" }, maxExcerptChars: { type: "integer" } } } },
+      ...(this.mutationEngine ? [{ id: "write_file", name: "filesystem/write_file", version: "1", description: "Create or replace an entire UTF-8 text file inside the configured workspace. Use an expected hash when modifying a file previously inspected.", inputSchema: { type: "object", required: ["path", "content", "mode"], properties: { path: { type: "string" }, content: { type: "string" }, mode: { enum: ["create", "replace", "create-or-replace"] }, expectedHash: { type: "string" } } } }, { id: "patch_file", name: "filesystem/patch_file", version: "1", description: "Apply targeted validated edits to one existing UTF-8 text file. Use expectedHash to reject stale edits; ambiguous or missing context fails closed.", inputSchema: { type: "object", required: ["path", "edits"], properties: { path: { type: "string" }, edits: { type: "array" }, expectedHash: { type: "string" } } } }] : []),
     ];
   }
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
@@ -43,6 +50,8 @@ export class FilesystemToolProvider implements ToolProvider {
       if (request.toolId === "list_directory") return await this.listDirectory(request.input);
       if (request.toolId === "stat") return await this.stat(request.input);
       if (request.toolId === "search") return await this.search(request.input, context);
+      if (request.toolId === "write_file") return await this.writeFile(request.input, context);
+      if (request.toolId === "patch_file") return await this.patchFile(request.input, context);
       return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Filesystem tool '${request.toolId}' is unavailable.`).error };
     } catch (error) { return { ok: false, error: error instanceof Error && "error" in error ? (error as { error: import("./contracts.js").HarnessError }).error : failure("TOOL_FAILED", error instanceof Error ? error.message : "Filesystem operation failed.").error }; }
   }
@@ -54,7 +63,7 @@ export class FilesystemToolProvider implements ToolProvider {
     const text = content.toString("utf8"); const selected = selectRange(text, parsed.data.range); if (selected.error) return { ok: false, error: selected.error };
     if (parsed.data.mode === "exact") {
       if (Buffer.byteLength(selected.content) > this.config.maxExactContextBytes) return { ok: false, error: failure("TOOL_FAILED", `Exact content exceeds the ${this.config.maxExactContextBytes}-byte context limit; use summary, exact line ranges, or a scratchpad note.`).error };
-      return { ok: true, output: { path: parsed.data.path, mode: "exact", content: selected.content, bytes: Buffer.byteLength(selected.content), ...(parsed.data.range ? { range: parsed.data.range } : {}) } };
+      return { ok: true, output: { path: parsed.data.path, mode: "exact", content: selected.content, bytes: Buffer.byteLength(selected.content), sha256: contentHash(content), ...(parsed.data.range ? { range: parsed.data.range } : {}) } };
     }
     const reduction: ContentReductionRequest = { content: selected.content, purpose: "summary", source: { kind: "file", path: parsed.data.path }, maxChars: this.config.maxSummaryChars };
     const result = await this.reducer.reduce(reduction, context);
@@ -67,16 +76,12 @@ export class FilesystemToolProvider implements ToolProvider {
     return { ok: true, output: { path: parsed.data.path, entries } };
   }
   private async search(input: JsonValue, context: ToolContext): Promise<ToolResult> { const parsed = searchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result: SearchResult = await this.searchEngine.search(this.searchSource, parsed.data as SearchQuery, context); return { ok: true, output: result as unknown as JsonValue }; }
+  private async writeFile(input: JsonValue, context: ToolContext): Promise<ToolResult> { if (!this.mutationEngine) return unavailableMutation(); const parsed = writeSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result = await this.mutationEngine.write(parsed.data as MutationWriteRequest, context); return { ok: true, output: result as unknown as JsonValue }; }
+  private async patchFile(input: JsonValue, context: ToolContext): Promise<ToolResult> { if (!this.mutationEngine) return unavailableMutation(); const parsed = patchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result = await this.mutationEngine.patch(parsed.data as MutationPatchRequest, context); return { ok: true, output: result as unknown as JsonValue }; }
   private async stat(input: JsonValue): Promise<ToolResult> {
-    const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const entry = await fs.stat(target); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other"; return { ok: true, output: { path: parsed.data.path, kind, size: entry.size } };
+    const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const entry = await fs.stat(target); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other"; const sha256 = entry.isFile() && entry.size <= this.config.maxReadBytes ? contentHash(await fs.readFile(target)) : undefined; return { ok: true, output: { path: parsed.data.path, kind, size: entry.size, ...(sha256 ? { sha256 } : {}) } };
   }
-  private async safePath(requested: string): Promise<string> {
-    if (isAbsolute(requested)) throw failure("CAPABILITY_UNAVAILABLE", "Absolute filesystem paths are not allowed.");
-    const candidate = resolve(this.root, requested); if (!inside(this.root, candidate)) throw failure("CAPABILITY_UNAVAILABLE", "Path is outside the configured filesystem root.");
-    let canonical: string; try { canonical = await fs.realpath(candidate); } catch { throw failure("CAPABILITY_UNAVAILABLE", "Filesystem path does not exist or cannot be resolved."); }
-    if (!inside(this.root, canonical)) throw failure("CAPABILITY_UNAVAILABLE", "Resolved path is outside the configured filesystem root.");
-    return canonical;
-  }
+  private async safePath(requested: string): Promise<string> { return this.boundary.resolveRead(requested); }
 }
 
 export class DeterministicContentReducer implements ContentReducer {
@@ -94,3 +99,4 @@ export class ModelContentReducer implements ContentReducer {
 function inside(root: string, target: string): boolean { const path = relative(root, target); return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)); }
 function selectRange(text: string, range?: { startLine?: number; endLine?: number }): { content: string; error?: import("./contracts.js").HarnessError } { if (!range) return { content: text }; const lines = text.split(/\r?\n/); const start = range.startLine ?? 1; const end = range.endLine ?? lines.length; if (start > end || start > lines.length) return { content: "", error: failure("VALIDATION_FAILED", "Line range is invalid.").error }; return { content: lines.slice(start - 1, Math.min(end, lines.length)).join("\n") }; }
 function invalid(issues: unknown): ToolResult { return { ok: false, error: failure("VALIDATION_FAILED", "Filesystem arguments are invalid.", false, { issues }).error }; }
+function unavailableMutation(): ToolResult { return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", "Filesystem mutation is disabled.").error }; }

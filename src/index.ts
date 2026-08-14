@@ -23,4 +23,6 @@ export * from "./compaction.js";
 export * from "./filesystem.js";
 export * from "./scratchpad.js";
 export * from "./search.js";
+export * from "./mutation.js";
+export * from "./workspace.js";
 export * from "./terminal.js";

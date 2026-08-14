@@ -13,6 +13,10 @@ describe("Porta application composition", () => {
     expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/read_file", "filesystem/list_directory", "filesystem/stat", "filesystem/search", "scratchpad/read", "scratchpad/write", "scratchpad/search"])); expect(app.searchEngines.filesystem).toBeTruthy(); expect(app.searchEngines.scratchpad).toBe("linear");
     await app.shutdown();
   });
+  it("exposes mutation tools only when explicitly enabled", async () => {
+    const app = await createPortaApplication({ ...config(), filesystem: { root: ".", mutation: { enabled: true } } }, { model: () => new MockModelProvider("ready") });
+    expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/write_file", "filesystem/patch_file"])); await app.shutdown();
+  });
   it("composes a healthy text-only application without contacting Ollama", async () => {
     const app = await createPortaApplication(config(), { model: () => new MockModelProvider("ready") });
     await app.start();

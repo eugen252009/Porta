@@ -9,7 +9,7 @@ export const portaConfigSchema = z.object({
   authorization: z.object({ mode: z.enum(["allow-all", "require-approval"]) }).default({ mode: "require-approval" }),
   agent: z.object({ maxSteps: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional() }).default({}),
   conversation: z.object({ maxTurns: z.number().int().positive().optional(), compaction: z.object({ enabled: z.boolean().default(false), keepRecentTurns: z.number().int().positive().default(4), maxManifestEntries: z.number().int().positive().default(20) }).optional() }).default({}),
-  filesystem: z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().optional(), maxReadBytes: z.number().int().positive().optional(), maxSummaryChars: z.number().int().positive().optional() }).optional(),
+  filesystem: z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().optional(), maxReadBytes: z.number().int().positive().optional(), maxSummaryChars: z.number().int().positive().optional(), mutation: z.object({ enabled: z.boolean().default(false), maxWriteBytes: z.number().int().positive().optional(), maxPatchTargetBytes: z.number().int().positive().optional() }).optional() }).optional(),
 });
 export type PortaConfig = z.infer<typeof portaConfigSchema>;
 /** @deprecated Use PortaConfig. */

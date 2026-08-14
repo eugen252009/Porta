@@ -10,6 +10,7 @@ import { ConversationStore, ModelProvider, ToolContext, ToolProvider } from "./c
 import { MemoryConversationStore } from "./conversation.js";
 import { ContentReducer as ReducerContract } from "./content-reducer.js";
 import { FilesystemSearchSource, FilesystemToolProvider, ModelContentReducer } from "./filesystem.js";
+import { MutationEngine } from "./mutation.js";
 import { CCCSearchEngine, GrepSearchEngine, LinearTextSearchEngine, RipgrepSearchEngine, SearchEngine, selectSearchEngine } from "./search.js";
 import { MemoryScratchpadStore, ScratchpadSearchSource, ScratchpadStore, ScratchpadToolProvider } from "./scratchpad.js";
 import { HarnessFailure } from "./contracts.js";
@@ -28,7 +29,7 @@ export interface PortaApplication {
   shutdown(): Promise<void>;
 }
 
-export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
@@ -38,7 +39,7 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
   const scratchpadEngine = selectSearchEngine(new ScratchpadSearchSource(scratchpad), searchCandidates) ?? new LinearTextSearchEngine();
   const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
   const filesystemEngine = filesystemRoot ? selectSearchEngine(new FilesystemSearchSource(filesystemRoot, config.filesystem?.maxReadBytes ?? 8 * 1024 * 1024), searchCandidates) ?? new LinearTextSearchEngine() : undefined;
-  const filesystem = config.filesystem ? new FilesystemToolProvider(config.filesystem, factories.contentReducer ?? new ModelContentReducer(model), filesystemEngine) : undefined;
+  const filesystem = config.filesystem ? new FilesystemToolProvider(config.filesystem, factories.contentReducer ?? new ModelContentReducer(model), filesystemEngine, factories.mutationEngine) : undefined;
   const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }];
   const modelManifest = { schemaVersion: 1 as const, id: "model.ollama", version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
   const manifests = [modelManifest, ...registrations.map((registration) => ({ schemaVersion: 1 as const, id: `tools.${registration.id}`, version: "1", provides: [{ id: "tools.discovery", version: "1" }, { id: "tools.invoke", version: "1" }], requires: [] }))];
