@@ -6,7 +6,7 @@ export interface ExecutionDecision { allowed: boolean; error?: { code: "POLICY_V
 export function evaluateExecutionPolicy(policy: ExecutionPolicy, capabilities: SandboxProvider["capabilities"]): ExecutionDecision {
   const normalized = { ...policy, codeLoading: policy.codeLoading ?? "allow" as const };
   for (const dimension of ["filesystem", "network", "codeLoading"] as const) {
-    if (normalized[dimension] === "deny" && capabilities[dimension] === "unsupported") return { allowed: false, error: { code: "POLICY_VIOLATION", message: `Sandbox cannot enforce denied ${dimension} access.`, details: { dimension, required: "deny", supported: capabilities[dimension] } } };
+    if (normalized[dimension] === "deny" && (capabilities[dimension] === "unsupported" || capabilities[dimension] === "best-effort")) return { allowed: false, error: { code: "POLICY_VIOLATION", message: `Sandbox cannot enforce denied ${dimension} access.`, details: { dimension, required: "deny", supported: capabilities[dimension] } } };
   }
   return { allowed: true };
 }

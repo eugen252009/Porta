@@ -18,7 +18,7 @@ class BubblewrapSession implements SandboxSession {
 /** Optional Linux namespace sandbox. It uses direct argv and never invokes a shell. */
 export class BubblewrapSandbox implements SandboxProvider {
   readonly descriptor = { id: "sandbox.linux-bubblewrap", version: "1" };
-  readonly capabilities: SandboxCapabilities = { filesystem: "external", network: "external", codeLoading: "unsupported" };
+  readonly capabilities: SandboxCapabilities = { filesystem: "best-effort", network: "external", codeLoading: "unsupported" };
   private readonly executable: string;
   private readonly workspaceRoot: string;
   constructor(config: BubblewrapSandboxConfig) { const parsed = bubblewrapSandboxConfigSchema.parse(config); this.executable = parsed.executable ?? "bwrap"; this.workspaceRoot = parsed.workspaceRoot; }
