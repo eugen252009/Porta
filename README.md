@@ -38,7 +38,9 @@ Task progress is session-scoped and in-memory. The `task/create`, `task/get`, an
 
 Local Git inspection is opt-in through `git.enabled` and exposes structured `git/status`, `git/diff`, `git/show`, and `git/log` tools. The CLI backend uses direct argv, `GIT_TERMINAL_PROMPT=0`, bounded output, and the configured workspace as the repository root. Remote operations and commits are intentionally not implemented.
 
-Durable state is opt-in through `persistence.enabled`. The SQLite adapter stores conversation turns, scratchpad entries, and task/evidence state under the configured workspace (for example `.porta/porta.db`). Use `PORTA_SESSION=<id>` or `--session <id>` with the terminal to resume an existing open session. SQLite persistence uses plaintext local storage and requires a Node runtime with `node:sqlite`; memory stores remain the default.
+Durable state is opt-in through `persistence.enabled`. The SQLite adapter stores conversation turns, scratchpad entries, task/evidence state, and immutable artifact payloads under the configured workspace (for example `.porta/porta.db`). Use `PORTA_SESSION=<id>` or `--session <id>` with the terminal to resume an existing open session. SQLite persistence uses plaintext local storage and requires a Node runtime with `node:sqlite`; memory stores remain the default.
+
+Large execution output is retained as an immutable artifact when it exceeds the contextual output bound. Use `artifact/stat`, `artifact/search`, and bounded `artifact/read` explicitly; full artifact contents are never automatically injected into model context. Artifacts are session-scoped and support SHA-256 integrity metadata.
 
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 

@@ -24,6 +24,7 @@ import { PendingApprovalProvider } from "./approval-pending.js";
 import { MemoryTaskStore, TaskStore, TaskToolProvider } from "./task.js";
 import { CliGitBackend, GitBackend, GitToolProvider } from "./git.js";
 import { openSqlitePersistence, SqlitePersistence } from "./persistence-sqlite.js";
+import { ArtifactSearchSource, ArtifactStore, ArtifactToolProvider, MemoryArtifactStore } from "./artifact.js";
 import { ToolRouter } from "./tools.js";
 
 export interface PortaApplication {
@@ -33,22 +34,25 @@ export interface PortaApplication {
   readonly conversations: ConversationStore;
   readonly scratchpad: ScratchpadStore;
   readonly tasks: TaskStore;
+  readonly artifacts: ArtifactStore;
   readonly searchEngines: { filesystem?: string; scratchpad: string };
   start(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
-export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; taskStore?: TaskStore; gitBackend?: GitBackend; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; taskStore?: TaskStore; artifactStore?: ArtifactStore; gitBackend?: GitBackend; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
   const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
-  const persistence: SqlitePersistence | undefined = config.persistence?.enabled ? await openSqlitePersistence(resolve(filesystemRoot ?? process.cwd(), config.persistence.path), config.conversation) : undefined;
+  const persistence: SqlitePersistence | undefined = config.persistence?.enabled ? await openSqlitePersistence(resolve(filesystemRoot ?? process.cwd(), config.persistence.path), config.conversation, config.persistence.maxArtifactBytes) : undefined;
   const mcpProviders = config.tools.map((tool) => factories.mcp?.({ providerId: tool.id, ...tool.transport }) ?? new MCPToolProvider({ providerId: tool.id, ...tool.transport }));
   const scratchpad = factories.scratchpad ?? persistence?.scratchpad ?? new MemoryScratchpadStore();
   const tasks = factories.taskStore ?? persistence?.tasks ?? new MemoryTaskStore();
+  const artifacts = factories.artifactStore ?? persistence?.artifacts ?? new MemoryArtifactStore(config.persistence?.maxArtifactBytes);
   const searchCandidates: readonly SearchEngine[] = [new CCCSearchEngine(), new RipgrepSearchEngine(), new GrepSearchEngine(), new LinearTextSearchEngine()];
   const scratchpadEngine = selectSearchEngine(new ScratchpadSearchSource(scratchpad), searchCandidates) ?? new LinearTextSearchEngine();
+  const artifactEngine = selectSearchEngine(new ArtifactSearchSource(artifacts), searchCandidates) ?? new LinearTextSearchEngine();
   const conversations = factories.conversations ?? persistence?.conversations ?? new MemoryConversationStore(config.conversation);
   const filesystemEngine = filesystemRoot ? selectSearchEngine(new FilesystemSearchSource(filesystemRoot, config.filesystem?.maxReadBytes ?? 8 * 1024 * 1024), searchCandidates) ?? new LinearTextSearchEngine() : undefined;
   const filesystem = config.filesystem ? new FilesystemToolProvider(config.filesystem, factories.contentReducer ?? new ModelContentReducer(model), filesystemEngine, factories.mutationEngine) : undefined;
@@ -60,13 +64,13 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     const host = new HostProcessSandbox();
     const candidates = factories.executionSandboxes ?? [new BubblewrapSandbox({ workspaceRoot: filesystemRoot }), host];
     const sandbox = factories.executionSandbox ?? (await selectSandbox({ filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, candidates.map((provider) => { const available = (provider as SandboxProvider & { available?: () => Promise<boolean> }).available; return available ? { provider, available: () => available.call(provider) } : { provider }; }), executionConfig.sandbox.preference)).provider;
-    return new ExecutionToolProvider(runtime, sandbox, { workspaceRoot: filesystemRoot, allowedCommands: executionConfig.allowedCommands, defaultTimeoutMs: executionConfig.defaultTimeoutMs, maxStdoutBytes: executionConfig.maxStdoutBytes, maxStderrBytes: executionConfig.maxStderrBytes, policy: { filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, environment: executionConfig.environment, allowedEnvironmentKeys: executionConfig.allowedEnvironmentKeys });
+    return new ExecutionToolProvider(runtime, sandbox, { workspaceRoot: filesystemRoot, allowedCommands: executionConfig.allowedCommands, defaultTimeoutMs: executionConfig.defaultTimeoutMs, maxStdoutBytes: executionConfig.maxStdoutBytes, maxStderrBytes: executionConfig.maxStderrBytes, maxArtifactBytes: config.persistence?.maxArtifactBytes, artifactStore: artifacts, policy: { filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, environment: executionConfig.environment, allowedEnvironmentKeys: executionConfig.allowedEnvironmentKeys });
   })() : undefined;
-  const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), ...(execution ? [{ id: "execution", provider: execution as ToolProvider }] : []), ...(git ? [{ id: "git", provider: git as ToolProvider }] : []), { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }, { id: "task", provider: new TaskToolProvider(tasks) }];
+  const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), ...(execution ? [{ id: "execution", provider: execution as ToolProvider }] : []), ...(git ? [{ id: "git", provider: git as ToolProvider }] : []), { id: "artifact", provider: new ArtifactToolProvider(artifacts, artifactEngine, config.persistence?.maxArtifactContextBytes) }, { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }, { id: "task", provider: new TaskToolProvider(tasks) }];
   const modelManifest = { schemaVersion: 1 as const, id: "model.ollama", version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
   const manifests = [modelManifest, ...registrations.map((registration) => ({ schemaVersion: 1 as const, id: `tools.${registration.id}`, version: "1", provides: [{ id: "tools.discovery", version: "1" }, { id: "tools.invoke", version: "1" }], requires: [] }))];
   const plan = planPlugins(manifests);
-  if (plan.status !== "ready") throw new HarnessFailure({ code: "PLUGIN_INVALID", message: "Porta plugin preflight failed.", retryable: false, details: plan.diagnostics });
+  if (plan.status !== "ready") { persistence?.close(); throw new HarnessFailure({ code: "PLUGIN_INVALID", message: "Porta plugin preflight failed.", retryable: false, details: plan.diagnostics }); }
   const healthy: { close?: () => Promise<void> }[] = [];
   try {
     if ("health" in model && typeof model.health === "function") { const status = await model.health(); if (status.status !== "healthy") throw new HarnessFailure({ code: "CAPABILITY_UNAVAILABLE", message: status.message ?? "Model provider is unhealthy.", retryable: false, details: status }); }
@@ -80,7 +84,7 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     const contextOptions: ConversationContextOptions = { ...(compaction ? { enabled: compaction.enabled, threshold: config.conversation.maxTurns, keepRecentTurns: compaction.keepRecentTurns, maxManifestEntries: compaction.maxManifestEntries, compactor: factories.compactor ?? new ModelConversationCompactor(model) } : {}), scratchpad, taskStore: tasks };
     const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 }, conversations, contextOptions);
     let stopped = false;
-    return { gateway, pendingApprovals: pending, toolRouter: router, conversations, scratchpad, tasks, searchEngines: { ...(filesystemEngine ? { filesystem: filesystemEngine.name } : {}), scratchpad: scratchpadEngine.name }, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...mcpProviders].reverse()) await provider.close(); persistence?.close(); } };
+    return { gateway, pendingApprovals: pending, toolRouter: router, conversations, scratchpad, tasks, artifacts, searchEngines: { ...(filesystemEngine ? { filesystem: filesystemEngine.name } : {}), scratchpad: scratchpadEngine.name }, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...mcpProviders].reverse()) await provider.close(); persistence?.close(); } };
   } catch (error) { for (const provider of [...healthy].reverse()) await provider.close?.(); persistence?.close(); throw error; }
 }
 
