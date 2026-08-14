@@ -25,7 +25,7 @@ describe("conversation compaction", () => {
     const { gateway, model, conversations, scratchpad } = setup(); const sessionId = await createSession(gateway); await scratchpad.write(sessionId, "important", "SCRATCHPAD_DURABLE_SENTINEL_8127"); await scratchpad.write(sessionId, "other", "other note"); await scratchpad.write(sessionId, "third", "third note");
     await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "second" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "third" }, {}));
     const request = model.received[2]!; const control = request.control?.map((message) => message.content).join("\n") ?? "";
-    expect(control).toContain("Conversation history was compacted"); expect(control).toContain("Check the scratchpad"); expect(control).toContain("important"); expect(control).toContain("... 1 more entries"); expect(control).not.toContain("SCRATCHPAD_DURABLE_SENTINEL_8127");
+    expect(control).toContain("Conversation history was compacted"); expect(control).toContain("scratchpad/search"); expect(control).toContain("important"); expect(control).toContain("... 1 more entries"); expect(control).not.toContain("SCRATCHPAD_DURABLE_SENTINEL_8127");
     expect(request.messages).toEqual(expect.arrayContaining([{ role: "user", content: "second" }, { role: "assistant", content: "turn two" }, { role: "user", content: "third" }]));
     expect((await conversations.getSession(sessionId))?.turns).toHaveLength(3); expect((await scratchpad.read(sessionId, "important"))?.content).toBe("SCRATCHPAD_DURABLE_SENTINEL_8127");
   });

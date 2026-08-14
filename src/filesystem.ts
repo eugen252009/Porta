@@ -3,26 +3,38 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { ContentReductionRequest, ContentReductionResult, ContentReducer } from "./content-reducer.js";
+import { LinearTextSearchEngine, SearchDocument, SearchEngine, SearchQuery, SearchResult, SearchSource } from "./search.js";
 import { JsonValue, ModelContext, ModelProvider, ToolContext, ToolDescriptor, ToolInvocation, ToolProvider, ToolResult, failure } from "./contracts.js";
 
 export interface FilesystemProviderConfig { root: string; maxExactContextBytes?: number; maxReadBytes?: number; maxSummaryChars?: number }
 const configSchema = z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().default(65536), maxReadBytes: z.number().int().positive().default(8 * 1024 * 1024), maxSummaryChars: z.number().int().positive().default(12000) });
 const readSchema = z.object({ path: z.string().min(1), mode: z.enum(["exact", "summary"]).default("exact"), range: z.object({ startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).optional() }).strict();
 const pathSchema = z.object({ path: z.string().min(1) }).strict();
+const searchSchema = z.object({ query: z.string().min(1), mode: z.enum(["text", "regex"]).optional(), limit: z.number().int().positive().optional(), maxExcerptChars: z.number().int().positive().optional() }).strict();
+
+export class FilesystemSearchSource implements SearchSource {
+  readonly kind = "filesystem";
+  constructor(readonly nativeRoot: string, private readonly maxReadBytes = 8 * 1024 * 1024) {}
+  async documents(context: ToolContext): Promise<readonly SearchDocument[]> { const documents: SearchDocument[] = []; await this.walk(this.nativeRoot, "", documents, context); return documents; }
+  private async walk(directory: string, prefix: string, documents: SearchDocument[], context: ToolContext): Promise<void> { if (context.signal.aborted) throw failure("CANCELLED", "Search was cancelled."); for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) { if (entry.isSymbolicLink()) continue; const relativePath = prefix ? join(prefix, entry.name) : entry.name; const target = join(directory, entry.name); if (entry.isDirectory()) await this.walk(target, relativePath, documents, context); else if (entry.isFile()) { const stat = await fs.stat(target); if (stat.size > this.maxReadBytes) continue; const buffer = await fs.readFile(target); if (!buffer.includes(0)) documents.push({ id: relativePath, content: buffer.toString("utf8") }); } } }
+}
 
 export class FilesystemToolProvider implements ToolProvider {
   readonly providerId = "filesystem";
   private readonly config: Required<FilesystemProviderConfig>;
   private readonly root: string;
-  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer()) {
+  private readonly searchSource: FilesystemSearchSource;
+  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer(), private readonly searchEngine: SearchEngine = new LinearTextSearchEngine()) {
     this.config = configSchema.parse(config);
     this.root = realpathSync(resolve(this.config.root));
+    this.searchSource = new FilesystemSearchSource(this.root, this.config.maxReadBytes);
   }
   async listTools(_context: ToolContext): Promise<readonly ToolDescriptor[]> {
     return [
       { id: "read_file", name: "filesystem/read_file", version: "1", description: "Read a text file. Use exact when exact source is required; use summary when semantic understanding is enough. Optional ranges are 1-based inclusive. Large exact content is rejected rather than silently truncated.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" }, mode: { enum: ["exact", "summary"] }, range: { type: "object" } } } },
       { id: "list_directory", name: "filesystem/list_directory", version: "1", description: "List one directory deterministically without recursive traversal.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } } },
       { id: "stat", name: "filesystem/stat", version: "1", description: "Return safe metadata for a file or directory.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } } },
+      { id: "search", name: "filesystem/search", version: "1", description: "Search the configured workspace for relevant text before calling read_file. Results are bounded excerpts with paths and line numbers.", inputSchema: { type: "object", required: ["query"], properties: { query: { type: "string" }, mode: { enum: ["text", "regex"] }, limit: { type: "integer" }, maxExcerptChars: { type: "integer" } } } },
     ];
   }
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
@@ -30,6 +42,7 @@ export class FilesystemToolProvider implements ToolProvider {
       if (request.toolId === "read_file") return await this.readFile(request.input, context);
       if (request.toolId === "list_directory") return await this.listDirectory(request.input);
       if (request.toolId === "stat") return await this.stat(request.input);
+      if (request.toolId === "search") return await this.search(request.input, context);
       return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Filesystem tool '${request.toolId}' is unavailable.`).error };
     } catch (error) { return { ok: false, error: error instanceof Error && "error" in error ? (error as { error: import("./contracts.js").HarnessError }).error : failure("TOOL_FAILED", error instanceof Error ? error.message : "Filesystem operation failed.").error }; }
   }
@@ -53,6 +66,7 @@ export class FilesystemToolProvider implements ToolProvider {
     for (const name of names) { const entryPath = join(target, name); const entry = await fs.lstat(entryPath); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other"; entries.push({ name, kind, ...(entry.isFile() ? { size: entry.size } : {}) }); }
     return { ok: true, output: { path: parsed.data.path, entries } };
   }
+  private async search(input: JsonValue, context: ToolContext): Promise<ToolResult> { const parsed = searchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result: SearchResult = await this.searchEngine.search(this.searchSource, parsed.data as SearchQuery, context); return { ok: true, output: result as unknown as JsonValue }; }
   private async stat(input: JsonValue): Promise<ToolResult> {
     const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const entry = await fs.stat(target); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other"; return { ok: true, output: { path: parsed.data.path, kind, size: entry.size } };
   }

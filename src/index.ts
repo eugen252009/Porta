@@ -22,4 +22,5 @@ export * from "./content-reducer.js";
 export * from "./compaction.js";
 export * from "./filesystem.js";
 export * from "./scratchpad.js";
+export * from "./search.js";
 export * from "./terminal.js";

@@ -1,0 +1,22 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FilesystemSearchSource, FilesystemToolProvider } from "../src/filesystem.js";
+import { LinearTextSearchEngine, GrepSearchEngine, RipgrepSearchEngine, SearchEngine, SearchSource, selectSearchEngine } from "../src/search.js";
+import { MemoryScratchpadStore, ScratchpadSearchSource, ScratchpadToolProvider } from "../src/scratchpad.js";
+import { ToolContext, ToolInvocation } from "../src/contracts.js";
+
+const context = (sessionId = "a"): ToolContext => ({ traceId: "trace", sessionId, executionId: "execution", signal: new AbortController().signal });
+const invocation = (toolId: string, input: unknown): ToolInvocation => ({ schemaVersion: 1, requestId: toolId, toolId, input: input as never });
+
+async function fixture() { const root = mkdtempSync(join(tmpdir(), "porta-search-")); writeFileSync(join(root, "a.ts"), "const TARGET = 1;\nother\n"); writeFileSync(join(root, "b.ts"), "TARGET appears here\n"); return root; }
+
+describe("composable search", () => {
+  it("uses the same linear engine with filesystem and scratchpad sources", async () => { const root = await fixture(); const notes = new MemoryScratchpadStore(); await notes.write("a", "architecture", "ToolRouter invokes exactly once"); const engine = new LinearTextSearchEngine(); const fsResult = await engine.search(new FilesystemSearchSource(root), { query: "TARGET" }, context()); const noteResult = await engine.search(new ScratchpadSearchSource(notes), { query: "exactly once" }, context()); expect(fsResult.matches.map((match) => match.location)).toEqual(["a.ts", "b.ts"]); expect(noteResult.matches[0]).toMatchObject({ location: "architecture", line: 1 }); });
+  it("exposes bounded filesystem and scratchpad search tools", async () => { const root = await fixture(); const fsProvider = new FilesystemToolProvider({ root }, undefined, new LinearTextSearchEngine()); const fsResult = await fsProvider.invoke(invocation("search", { query: "TARGET", limit: 1, maxExcerptChars: 5 }), context()); expect(fsResult).toMatchObject({ ok: true, output: { engine: "linear", truncated: true } }); const notes = new MemoryScratchpadStore(); await notes.write("a", "one", "needle one"); await notes.write("a", "two", "needle two"); const scratch = new ScratchpadToolProvider(notes, new LinearTextSearchEngine()); const result = await scratch.invoke(invocation("search", { query: "needle", limit: 1 }), context()); expect(result).toMatchObject({ ok: true, output: { matches: [{ location: "one" }], truncated: true } }); expect(JSON.stringify(result)).not.toContain("needle two"); });
+  it("isolates scratchpad search by trusted session context", async () => { const notes = new MemoryScratchpadStore(); await notes.write("a", "private", "ALPHA_ONLY"); const provider = new ScratchpadToolProvider(notes, new LinearTextSearchEngine()); expect(await provider.invoke(invocation("search", { query: "ALPHA_ONLY" }), context("b"))).toMatchObject({ ok: true, output: { matches: [] } }); });
+  it("supports real rg/grep fallback adapters without shell interpolation", async () => { const root = await fixture(); const source = new FilesystemSearchSource(root); const engines: SearchEngine[] = [new RipgrepSearchEngine(), new GrepSearchEngine()]; for (const engine of engines) if (engine.available(source)) { const result = await engine.search(source, { query: "TARGET", mode: "text" }, context()); expect(result.matches.length).toBe(2); expect(result.matches[0]?.location).toBe("a.ts"); } });
+  it("selects the first available compatible engine deterministically", () => { const source: SearchSource = { kind: "test", async documents() { return []; } }; const first: SearchEngine = { name: "first", supports: () => true, available: () => false, search: async () => ({ engine: "first", matches: [], truncated: false }) }; const second: SearchEngine = { name: "second", supports: () => true, available: () => true, search: async () => ({ engine: "second", matches: [], truncated: false }) }; expect(selectSearchEngine(source, [first, second])?.name).toBe("second"); });
+  it("cancels a search before backend work", async () => { const root = await fixture(); const controller = new AbortController(); controller.abort(); await expect(new LinearTextSearchEngine().search(new FilesystemSearchSource(root), { query: "TARGET" }, { ...context(), signal: controller.signal })).rejects.toMatchObject({ error: { code: "CANCELLED" } }); });
+});

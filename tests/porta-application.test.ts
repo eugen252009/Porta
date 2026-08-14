@@ -10,7 +10,7 @@ describe("Porta application composition", () => {
   it("rejects missing model configuration", () => expect(() => parsePortaConfig({ model: { provider: "ollama", baseUrl: "not-url" } })).toThrow());
   it("registers configured filesystem and scratchpad tools", async () => {
     const app = await createPortaApplication({ ...config(), filesystem: { root: "." } }, { model: () => new MockModelProvider("ready") });
-    expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/read_file", "filesystem/list_directory", "filesystem/stat", "scratchpad/read", "scratchpad/write"]));
+    expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/read_file", "filesystem/list_directory", "filesystem/stat", "filesystem/search", "scratchpad/read", "scratchpad/write", "scratchpad/search"])); expect(app.searchEngines.filesystem).toBeTruthy(); expect(app.searchEngines.scratchpad).toBe("linear");
     await app.shutdown();
   });
   it("composes a healthy text-only application without contacting Ollama", async () => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { JsonValue, ToolContext, ToolDescriptor, ToolInvocation, ToolProvider, ToolResult, failure } from "./contracts.js";
+import { SearchDocument, SearchEngine, SearchQuery, SearchResult, SearchSource, LinearTextSearchEngine } from "./search.js";
 
 export interface ScratchpadMetadata { key: string; bytes: number; createdAt: string; updatedAt: string }
 export interface ScratchpadEntry extends ScratchpadMetadata { sessionId: string; content: string }
@@ -22,16 +23,25 @@ export class MemoryScratchpadStore implements ScratchpadStore {
 const keySchema = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
 const writeSchema = z.object({ key: keySchema, content: z.string() }).strict();
 const readSchema = z.object({ key: keySchema }).strict();
+const searchSchema = z.object({ query: z.string().min(1), mode: z.enum(["text", "regex"]).optional(), limit: z.number().int().positive().optional(), maxExcerptChars: z.number().int().positive().optional() }).strict();
+
+export class ScratchpadSearchSource implements SearchSource {
+  readonly kind = "scratchpad";
+  constructor(private readonly store: ScratchpadStore) {}
+  async documents(context: ToolContext): Promise<readonly SearchDocument[]> { const documents: SearchDocument[] = []; for (const entry of await this.store.list(context.sessionId)) { const content = await this.store.read(context.sessionId, entry.key); if (content) documents.push({ id: content.key, content: content.content }); } return documents; }
+}
 
 export class ScratchpadToolProvider implements ToolProvider {
   readonly providerId = "scratchpad";
-  constructor(private readonly store: ScratchpadStore) {}
+  private readonly searchSource: ScratchpadSearchSource;
+  constructor(private readonly store: ScratchpadStore, private readonly searchEngine: SearchEngine = new LinearTextSearchEngine()) { this.searchSource = new ScratchpadSearchSource(store); }
   async listTools(_context: ToolContext): Promise<readonly ToolDescriptor[]> {
     return [
       { id: "write", name: "scratchpad/write", version: "1", description: "Write or replace an agent-authored working note. The content remains off-context until explicitly read.", inputSchema: { type: "object", required: ["key", "content"], properties: { key: { type: "string" }, content: { type: "string" } } } },
       { id: "append", name: "scratchpad/append", version: "1", description: "Append agent-authored working notes to an existing logical key.", inputSchema: { type: "object", required: ["key", "content"], properties: { key: { type: "string" }, content: { type: "string" } } } },
       { id: "read", name: "scratchpad/read", version: "1", description: "Explicitly bring one off-context working note into the active model context.", inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string" } } } },
       { id: "list", name: "scratchpad/list", version: "1", description: "List available working-note keys and metadata without returning their contents.", inputSchema: { type: "object", properties: {} } },
+      { id: "search", name: "scratchpad/search", version: "1", description: "Search session-scoped working notes. Use this after compaction to locate relevant notes, then scratchpad/read only the entries you need.", inputSchema: { type: "object", required: ["query"], properties: { query: { type: "string" }, mode: { enum: ["text", "regex"] }, limit: { type: "integer" }, maxExcerptChars: { type: "integer" } } } },
     ];
   }
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
@@ -47,6 +57,7 @@ export class ScratchpadToolProvider implements ToolProvider {
         return { ok: true, output: { key: entry.key, content: entry.content, bytes: entry.bytes, updatedAt: entry.updatedAt } };
       }
       if (request.toolId === "list") return { ok: true, output: (await this.store.list(context.sessionId)) as unknown as JsonValue };
+      if (request.toolId === "search") { const parsed = searchSchema.safeParse(request.input); if (!parsed.success) return invalid(parsed.error.issues); const result: SearchResult = await this.searchEngine.search(this.searchSource, parsed.data as SearchQuery, context); return { ok: true, output: result as unknown as JsonValue }; }
       return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Scratchpad tool '${request.toolId}' is unavailable.`).error };
     } catch (error) { return { ok: false, error: error instanceof Error && "error" in error ? (error as { error: import("./contracts.js").HarnessError }).error : failure("TOOL_FAILED", error instanceof Error ? error.message : "Scratchpad operation failed.").error }; }
   }

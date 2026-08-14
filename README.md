@@ -30,6 +30,8 @@ Optional read-only filesystem tools can be enabled with `filesystem.root`. They 
 
 Conversation compaction is opt-in with `conversation.maxTurns` plus `conversation.compaction.enabled`. It derives a summary for execution context, retains recent complete turns, and adds a bounded scratchpad manifest and recovery hint. Canonical history and scratchpad contents remain unchanged.
 
+Composable search exposes stable `filesystem/search` and `scratchpad/search` tools while the composition root selects the best available backend. CCC is preferred for indexed workspace roots, followed by ripgrep, grep, and a built-in linear engine. Scratchpad search uses the canonical session-scoped store and remains available without an external index.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Local terminal application
