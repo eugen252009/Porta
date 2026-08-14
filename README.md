@@ -24,14 +24,16 @@ MCP is integrated as an optional stdio-only `MCPToolProvider` using the official
 
 Agent execution is a provider-neutral loop over `ModelProvider` and `ToolRouter`. It owns canonical tool-call IDs, sequential tool execution, tool-result correlation, execution-local deduplication, step/tool-call limits, cancellation, deadlines, and lifecycle events. Tool failures are model-visible results; global cancellation, deadlines, malformed model calls, and limits terminate the execution. No model adapter or protocol adapter is invoked directly by the orchestrator.
 
+Porta conversation sessions own completed semantic turns in an in-memory `ConversationStore`. Each execution receives an immutable history snapshot and successful turns commit structured user, assistant, tool-call, and tool-result messages atomically. `conversation.maxTurns` provides coarse deterministic context budgeting by dropping only oldest complete turns; history is not persisted across restarts and is not summarized.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Local terminal application
 
-Start Porta with `npm run porta`. The legacy `npm run harness` command remains an alias. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `PORTA_CONFIG` to a JSON file (the deprecated `HARNESS_CONFIG` variable remains a fallback) using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), and optional agent limits. For example:
+Start Porta with `npm run porta`. The legacy `npm run harness` command remains an alias. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `PORTA_CONFIG` to a JSON file (the deprecated `HARNESS_CONFIG` variable remains a fallback) using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), optional agent limits, and `conversation.maxTurns` for deterministic context budgeting. For example:
 
 ```json
-{"model":{"provider":"ollama","baseUrl":"http://localhost:11434","model":"your-local-model"},"authorization":{"mode":"require-approval"},"tools":[]}
+{"model":{"provider":"ollama","baseUrl":"http://localhost:11434","model":"your-local-model"},"authorization":{"mode":"require-approval"},"conversation":{"maxTurns":32},"tools":[]}
 ```
 
 The shell streams canonical application events, accepts `y`/`yes` for approval, denies other approval input (including EOF), accepts `/cancel`, and treats EOF as graceful shutdown. A built invocation is `npm run build && node dist/src/main.js`.

@@ -3,6 +3,8 @@ import { OllamaModelProvider } from "./adapters/model-ollama.js";
 import { InteractiveApprovalGateway } from "./application-gateway.js";
 import { AllowAllToolAuthorizationPolicy, StaticToolAuthorizationPolicy } from "./authorization-mocks.js";
 import { PortaConfig } from "./porta-config.js";
+import { ConversationStore } from "./contracts.js";
+import { MemoryConversationStore } from "./conversation.js";
 import { HarnessFailure, ModelProvider, ToolContext } from "./contracts.js";
 import { planPlugins } from "./plugin-preflight.js";
 import { PendingApprovalProvider } from "./approval-pending.js";
@@ -12,11 +14,12 @@ export interface PortaApplication {
   readonly gateway: InteractiveApprovalGateway;
   readonly pendingApprovals: PendingApprovalProvider;
   readonly toolRouter: ToolRouter;
+  readonly conversations: ConversationStore;
   start(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
-export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
@@ -33,10 +36,11 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     const context: ToolContext = { traceId: "startup", sessionId: "startup", executionId: "startup", signal: new AbortController().signal };
     for (const provider of providers) await router.register(provider.providerId, provider, context);
     const pending = new PendingApprovalProvider();
+    const conversations = factories.conversations ?? new MemoryConversationStore(config.conversation);
     const policy = config.authorization.mode === "allow-all" ? new AllowAllToolAuthorizationPolicy() : new StaticToolAuthorizationPolicy("require-approval");
-    const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 });
+    const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 }, conversations);
     let stopped = false;
-    return { gateway, pendingApprovals: pending, toolRouter: router, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...providers].reverse()) await provider.close(); } };
+    return { gateway, pendingApprovals: pending, toolRouter: router, conversations, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...providers].reverse()) await provider.close(); } };
   } catch (error) { for (const provider of [...healthy].reverse()) await provider.close?.(); throw error; }
 }
 

@@ -8,6 +8,7 @@ export const portaConfigSchema = z.object({
   tools: z.array(toolConfigSchema).default([]),
   authorization: z.object({ mode: z.enum(["allow-all", "require-approval"]) }).default({ mode: "require-approval" }),
   agent: z.object({ maxSteps: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional() }).default({}),
+  conversation: z.object({ maxTurns: z.number().int().positive().optional() }).default({}),
 });
 export type PortaConfig = z.infer<typeof portaConfigSchema>;
 /** @deprecated Use PortaConfig. */

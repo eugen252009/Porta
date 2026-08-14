@@ -51,6 +51,18 @@ export interface ApprovalRequestedEvent { type: "ApprovalRequested"; approvalId:
 export interface ApprovalResolvedEvent { type: "ApprovalResolved"; approvalId: string; decision: ApprovalCommandDecision; executionId: string; sessionId: string; traceId: string; reason?: string }
 export interface Storage { createSession(session: Session): Promise<void>; getSession(id: string): Promise<Session | undefined>; closeSession(id: string): Promise<void> }
 export interface Session { schemaVersion: 1; id: string; state: "open" | "closed"; createdAt: string }
+export interface ConversationTurn { readonly messages: readonly ModelMessage[] }
+export interface ConversationSession extends Session { readonly history: readonly ModelMessage[]; readonly turns: readonly ConversationTurn[] }
+export interface ConversationBudget { readonly maxTurns?: number }
+export interface ConversationSnapshot { readonly history: readonly ModelMessage[]; readonly turnsAvailable: number; readonly turnsIncluded: number; readonly turnsDropped: number }
+export interface ConversationStore {
+  createSession(session: ConversationSession): Promise<void>;
+  getSession(id: string): Promise<ConversationSession | undefined>;
+  closeSession(id: string): Promise<void>;
+  commitTurn(id: string, turn: ConversationTurn): Promise<void>;
+  snapshot(id: string): Promise<ConversationSnapshot>;
+  openSessionIds(): readonly string[];
+}
 export interface InputMessage { schemaVersion: 1; type: "create-session" | "submit-input" | "cancel-execution" | "close-session"; sessionId?: string; input?: string }
 export interface InputAdapter { input(): AsyncIterable<InputMessage> }
 export interface PresentationEvent { schemaVersion: 1; event: KernelEvent }

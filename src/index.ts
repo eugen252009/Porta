@@ -17,4 +17,5 @@ export * from "./approval-pending.js";
 export * from "./application-gateway.js";
 export * from "./porta-config.js";
 export * from "./porta-application.js";
+export * from "./conversation.js";
 export * from "./terminal.js";

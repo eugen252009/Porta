@@ -21,7 +21,7 @@ export function mapToolsToOllama(tools: readonly ToolDescriptor[]): { definition
 }
 export function mapRequestToOllama(request: ModelRequest, model: string): OllamaChatRequest {
   const mapped = mapToolsToOllama(request.tools ?? []); const mapping = new Map(mapped.mappings.map((entry) => [entry.nativeName, entry.canonicalId])); const tools = mapped.definitions;
-  const messages: OllamaMessage[] = [{ role: "user", content: request.input }];
+  const messages: OllamaMessage[] = request.messages?.length ? [] : [{ role: "user", content: request.input }];
   for (const message of request.messages ?? []) {
     if (message.role === "user") messages.push({ role: "user", content: message.content });
     else if (message.role === "assistant") messages.push({ role: "assistant", ...(message.content ? { content: message.content } : {}), ...(message.toolCalls ? { tool_calls: message.toolCalls.map((call) => ({ function: { name: [...mapping.entries()].find(([, id]) => id === call.toolId)?.[0] ?? call.toolId, arguments: call.input } })) } : {}) });
