@@ -34,10 +34,11 @@ export class MemoryTaskStore implements TaskStore {
   async get(sessionId: string): Promise<Task | undefined> { const task = this.tasks.get(sessionId); return task ? copyTask(task) : undefined; }
   async update(sessionId: string, taskId: string, expectedVersion: number, update: TaskUpdate): Promise<Task> {
     const current = this.tasks.get(sessionId); if (!current || current.id !== taskId) throw failure("CAPABILITY_UNAVAILABLE", "Task was not found for this session."); if (current.version !== expectedVersion) throw failure("CAPABILITY_CONFLICT", "Task update is stale.", false, { expectedVersion, actualVersion: current.version });
-    const next = applyUpdate(current, update); const updated = Object.freeze({ ...next, version: current.version + 1, updatedAt: new Date().toISOString() }); this.tasks.set(sessionId, updated); return copyTask(updated);
+    const updated = applyTaskUpdate(current, update); this.tasks.set(sessionId, updated); return copyTask(updated);
   }
 }
 
+export function applyTaskUpdate(task: Task, update: TaskUpdate): Task { const next = applyUpdate(task, update); return Object.freeze({ ...next, version: task.version + 1, updatedAt: new Date().toISOString() }); }
 function applyUpdate(task: Task, update: TaskUpdate): Omit<Task, "version" | "updatedAt"> {
   if (update.type === "add_step") { const step: TaskStep = { id: update.stepId ?? `step-${randomUUID()}`, description: update.description, status: "pending" }; if (!update.description.trim() || task.steps.some((entry) => entry.id === step.id)) throw failure("VALIDATION_FAILED", "Step description must be non-empty and step IDs must be unique."); return { ...task, steps: [...task.steps, step] }; }
   if (update.type === "set_step_status") { const index = task.steps.findIndex((step) => step.id === update.stepId); if (index < 0) throw failure("CAPABILITY_UNAVAILABLE", `Step '${update.stepId}' was not found.`); if (update.status === "active" && task.steps.some((step) => step.status === "active" && step.id !== update.stepId)) throw failure("CAPABILITY_CONFLICT", "Another task step is already active."); const steps = task.steps.map((step, position) => position === index ? { ...step, status: update.status } : step); return { ...task, steps }; }

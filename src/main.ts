@@ -11,7 +11,9 @@ try {
   application = await createPortaApplication(config);
   await application.start();
   process.stdout.write(`Model: ${config.model.model}\n\n`);
-  await runTerminal(application.gateway, new TerminalInputAdapter(process.stdin), new TerminalRenderer(process.stdout), process.stdout);
+  const sessionFlag = process.argv.findIndex((value) => value === "--session"); const resumeSessionId = sessionFlag >= 0 ? process.argv[sessionFlag + 1] : process.env.PORTA_SESSION;
+  if (sessionFlag >= 0 && !resumeSessionId) throw new Error("--session requires a session ID.");
+  await runTerminal(application.gateway, new TerminalInputAdapter(process.stdin), new TerminalRenderer(process.stdout), process.stdout, resumeSessionId);
 } catch (error) {
   process.stderr.write(`Porta startup failed.\n${error instanceof HarnessFailure ? error.error.message : formatConfigError(error)}\n`);
   process.exitCode = 1;

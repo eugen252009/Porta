@@ -14,8 +14,10 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
   constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter, private readonly pending: PendingApprovalProvider, private readonly policy: ToolAuthorizationPolicy, private readonly limits = { maxSteps: 8, maxToolCalls: 16 }, private readonly conversations: ConversationStore = new MemoryConversationStore(), private readonly contextOptions: ConversationContextOptions = {}) {}
   async *execute(command: KernelCommand, context: CommandContext = {}): AsyncIterable<KernelEvent> {
     if (command.type === "CreateSession") {
-      const sessionId = randomUUID();
-      await this.conversations.createSession(sessionFromBase({ schemaVersion: 1, id: sessionId, state: "open", createdAt: new Date().toISOString() }));
+      const sessionId = command.sessionId ?? randomUUID();
+      const existing = command.sessionId ? await this.conversations.getSession(command.sessionId) : undefined;
+      if (command.sessionId && (!existing || existing.state !== "open")) { yield { type: "Error", error: failure("STORAGE_FAILED", `Session '${command.sessionId}' is unavailable.`).error }; return; }
+      if (!existing) await this.conversations.createSession(sessionFromBase({ schemaVersion: 1, id: sessionId, state: "open", createdAt: new Date().toISOString() }));
       yield { type: "SessionCreated", sessionId }; return;
     }
     if (command.type === "ResolveApproval") {
@@ -60,7 +62,7 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
       const subscription = approvalEvents as unknown as { close?: () => void }; subscription.close?.();
     }
   }
-  async shutdown(): Promise<void> { await Promise.all([...this.active.values()].map((execution) => execution.cancel())); this.active.clear(); for (const id of this.conversations.openSessionIds()) await this.conversations.closeSession(id); }
+  async shutdown(): Promise<void> { await Promise.all([...this.active.values()].map((execution) => execution.cancel())); this.active.clear(); }
   private async prepareContext(sessionId: string, context: ModelContext): Promise<{ history: readonly import("./contracts.js").ModelMessage[]; control: readonly import("./contracts.js").ModelControlMessage[] }> {
     const snapshot = await this.conversations.snapshot(sessionId); const threshold = this.contextOptions.threshold;
     const taskControl = await this.taskControl(sessionId);

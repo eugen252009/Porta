@@ -23,6 +23,7 @@ import { planPlugins } from "./plugin-preflight.js";
 import { PendingApprovalProvider } from "./approval-pending.js";
 import { MemoryTaskStore, TaskStore, TaskToolProvider } from "./task.js";
 import { CliGitBackend, GitBackend, GitToolProvider } from "./git.js";
+import { openSqlitePersistence, SqlitePersistence } from "./persistence-sqlite.js";
 import { ToolRouter } from "./tools.js";
 
 export interface PortaApplication {
@@ -41,12 +42,14 @@ export interface PortaFactories { model?: (config: PortaConfig["model"]) => Mode
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
+  const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
+  const persistence: SqlitePersistence | undefined = config.persistence?.enabled ? await openSqlitePersistence(resolve(filesystemRoot ?? process.cwd(), config.persistence.path), config.conversation) : undefined;
   const mcpProviders = config.tools.map((tool) => factories.mcp?.({ providerId: tool.id, ...tool.transport }) ?? new MCPToolProvider({ providerId: tool.id, ...tool.transport }));
-  const scratchpad = factories.scratchpad ?? new MemoryScratchpadStore();
-  const tasks = factories.taskStore ?? new MemoryTaskStore();
+  const scratchpad = factories.scratchpad ?? persistence?.scratchpad ?? new MemoryScratchpadStore();
+  const tasks = factories.taskStore ?? persistence?.tasks ?? new MemoryTaskStore();
   const searchCandidates: readonly SearchEngine[] = [new CCCSearchEngine(), new RipgrepSearchEngine(), new GrepSearchEngine(), new LinearTextSearchEngine()];
   const scratchpadEngine = selectSearchEngine(new ScratchpadSearchSource(scratchpad), searchCandidates) ?? new LinearTextSearchEngine();
-  const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
+  const conversations = factories.conversations ?? persistence?.conversations ?? new MemoryConversationStore(config.conversation);
   const filesystemEngine = filesystemRoot ? selectSearchEngine(new FilesystemSearchSource(filesystemRoot, config.filesystem?.maxReadBytes ?? 8 * 1024 * 1024), searchCandidates) ?? new LinearTextSearchEngine() : undefined;
   const filesystem = config.filesystem ? new FilesystemToolProvider(config.filesystem, factories.contentReducer ?? new ModelContentReducer(model), filesystemEngine, factories.mutationEngine) : undefined;
   const git = config.git?.enabled && filesystemRoot ? await (async () => { const backend = factories.gitBackend ?? new CliGitBackend({ root: filesystemRoot, executable: config.git!.executable, maxStatusEntries: config.git!.maxStatusEntries, maxDiffBytes: config.git!.maxDiffBytes, maxShowBytes: config.git!.maxShowBytes, maxLogEntries: config.git!.maxLogEntries }); const available = backend.available ? await backend.available() : true; return available ? new GitToolProvider(backend) : undefined; })() : undefined;
@@ -72,14 +75,13 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     const context: ToolContext = { traceId: "startup", sessionId: "startup", executionId: "startup", signal: new AbortController().signal };
     for (const registration of registrations) await router.register(registration.id, registration.provider, context);
     const pending = new PendingApprovalProvider();
-    const conversations = factories.conversations ?? new MemoryConversationStore(config.conversation);
     const policy = config.authorization.mode === "allow-all" ? new AllowAllToolAuthorizationPolicy() : new StaticToolAuthorizationPolicy("require-approval");
     const compaction = config.conversation.compaction;
     const contextOptions: ConversationContextOptions = { ...(compaction ? { enabled: compaction.enabled, threshold: config.conversation.maxTurns, keepRecentTurns: compaction.keepRecentTurns, maxManifestEntries: compaction.maxManifestEntries, compactor: factories.compactor ?? new ModelConversationCompactor(model) } : {}), scratchpad, taskStore: tasks };
     const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 }, conversations, contextOptions);
     let stopped = false;
-    return { gateway, pendingApprovals: pending, toolRouter: router, conversations, scratchpad, tasks, searchEngines: { ...(filesystemEngine ? { filesystem: filesystemEngine.name } : {}), scratchpad: scratchpadEngine.name }, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...mcpProviders].reverse()) await provider.close(); } };
-  } catch (error) { for (const provider of [...healthy].reverse()) await provider.close?.(); throw error; }
+    return { gateway, pendingApprovals: pending, toolRouter: router, conversations, scratchpad, tasks, searchEngines: { ...(filesystemEngine ? { filesystem: filesystemEngine.name } : {}), scratchpad: scratchpadEngine.name }, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...mcpProviders].reverse()) await provider.close(); persistence?.close(); } };
+  } catch (error) { for (const provider of [...healthy].reverse()) await provider.close?.(); persistence?.close(); throw error; }
 }
 
 /** @deprecated Use PortaApplication. */

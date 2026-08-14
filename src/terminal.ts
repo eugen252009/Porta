@@ -29,10 +29,10 @@ export class TerminalRenderer implements Renderer {
   write(text: string): void { this.output.write(text); }
 }
 
-export async function runTerminal(gateway: ApplicationGateway, input: TerminalInputAdapter, renderer: TerminalRenderer, output: Writable): Promise<void> {
-  const created = await collect(gateway, { type: "CreateSession" }, {});
+export async function runTerminal(gateway: ApplicationGateway, input: TerminalInputAdapter, renderer: TerminalRenderer, output: Writable, resumeSessionId?: string): Promise<void> {
+  const created = await collect(gateway, { type: "CreateSession", ...(resumeSessionId ? { sessionId: resumeSessionId } : {}) }, {});
   const sessionId = created.find((event): event is Extract<KernelEvent, { type: "SessionCreated" }> => event.type === "SessionCreated")?.sessionId;
-  if (!sessionId) throw new Error("Could not create terminal session.");
+  if (!sessionId) { const error = created.find((event) => event.type === "Error"); throw new Error(error?.type === "Error" ? error.error.message : "Could not create terminal session."); }
   output.write("Porta ready.\n\n> ");
   let stopping = false;
   const cancel = async () => { if (!stopping) { stopping = true; await collect(gateway, { type: "CancelExecution", sessionId }, {}); } };

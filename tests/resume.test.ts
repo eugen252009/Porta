@@ -1,0 +1,15 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createPortaApplication } from "../src/porta-application.js";
+import { parsePortaConfig } from "../src/porta-config.js";
+import { ModelDescriptor, ModelEvent, ModelProvider, ModelRequest, ModelContext } from "../src/contracts.js";
+
+class RecordingModel implements ModelProvider { readonly descriptor: ModelDescriptor = { id: "resume-model", version: "1", capabilities: [] }; readonly requests: ModelRequest[] = []; async *generate(request: ModelRequest, _context: ModelContext): AsyncIterable<ModelEvent> { this.requests.push(request); yield { type: "delta", text: "resumed" }; yield { type: "completed" }; } }
+async function collect(source: AsyncIterable<unknown>) { const events: unknown[] = []; for await (const event of source) events.push(event); return events; }
+
+describe("persistent session resume", () => {
+  it("restores conversation and resumes an explicit session", async () => { const root = mkdtempSync(join(tmpdir(), "porta-resume-")); const config = parsePortaConfig({ model: { provider: "ollama", baseUrl: "http://localhost:11434", model: "test" }, filesystem: { root }, persistence: { enabled: true, path: ".porta/state.db" }, authorization: { mode: "allow-all" } }); const firstModel = new RecordingModel(); const first = await createPortaApplication(config, { model: () => firstModel }); const created = (await collect(first.gateway.execute({ type: "CreateSession" })))[0] as { type: string; sessionId: string }; await collect(first.gateway.execute({ type: "SubmitInput", sessionId: created.sessionId, input: "first input" })); await first.shutdown(); const secondModel = new RecordingModel(); const second = await createPortaApplication(config, { model: () => secondModel }); const resumed = (await collect(second.gateway.execute({ type: "CreateSession", sessionId: created.sessionId })))[0] as { type: string; sessionId: string }; expect(resumed).toMatchObject({ type: "SessionCreated", sessionId: created.sessionId }); await collect(second.gateway.execute({ type: "SubmitInput", sessionId: created.sessionId, input: "second input" })); expect(secondModel.requests[0]?.messages?.map((message) => message.role)).toEqual(["user", "assistant", "user"]); expect(secondModel.requests[0]?.messages?.[0]).toMatchObject({ role: "user", content: "first input" }); await second.shutdown(); });
+  it("rejects an unknown explicit session", async () => { const root = mkdtempSync(join(tmpdir(), "porta-resume-missing-")); const config = parsePortaConfig({ model: { provider: "ollama", baseUrl: "http://localhost:11434", model: "test" }, filesystem: { root }, persistence: { enabled: true, path: "state.db" } }); const app = await createPortaApplication(config, { model: () => new RecordingModel() }); const events = await collect(app.gateway.execute({ type: "CreateSession", sessionId: "missing-session" })); expect(events[0]).toMatchObject({ type: "Error", error: { code: "STORAGE_FAILED" } }); await app.shutdown(); });
+});

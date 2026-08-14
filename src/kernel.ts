@@ -54,7 +54,7 @@ export class HarnessKernel implements ApplicationGateway {
   async *execute(command: KernelCommand, context: CommandContext = {}): AsyncIterable<KernelEvent> {
     try {
       if (command.type === "CreateSession") {
-        const session: Session = { schemaVersion: 1, id: randomUUID(), state: "open", createdAt: new Date().toISOString() };
+        const session: Session = { schemaVersion: 1, id: command.sessionId ?? randomUUID(), state: "open", createdAt: new Date().toISOString() };
         await this.storage.createSession(session); yield { type: "SessionCreated", sessionId: session.id }; return;
       }
       if (command.type === "ResolveApproval") throw failure("CAPABILITY_UNAVAILABLE", "Approval resolution is unavailable in the kernel gateway.");
