@@ -6,6 +6,6 @@ class HostSandboxSession implements SandboxSession { readonly id = executionId()
 /** Host processes are not a hard sandbox; this adapter reports best-effort enforcement honestly. */
 export class HostProcessSandbox implements SandboxProvider {
   readonly descriptor = { id: "sandbox.host-process", version: "1" };
-  readonly capabilities: SandboxCapabilities = { filesystem: "best-effort", network: "best-effort", codeLoading: "best-effort" };
+  readonly capabilities: SandboxCapabilities = { filesystem: "best-effort", network: "unsupported", codeLoading: "unsupported" };
   async create(_policy: ExecutionPolicy): Promise<SandboxSession> { return new HostSandboxSession(); }
 }
