@@ -26,6 +26,8 @@ Agent execution is a provider-neutral loop over `ModelProvider` and `ToolRouter`
 
 Porta conversation sessions own completed semantic turns in an in-memory `ConversationStore`. Each execution receives an immutable history snapshot and successful turns commit structured user, assistant, tool-call, and tool-result messages atomically. `conversation.maxTurns` provides coarse deterministic context budgeting by dropping only oldest complete turns; history is not persisted across restarts and is not summarized.
 
+Optional read-only filesystem tools can be enabled with `filesystem.root`. They provide `filesystem/read_file`, `filesystem/list_directory`, and `filesystem/stat` under a confined root. File summaries use a generic content-reduction boundary. Agent-authored notes are provided separately by session-scoped `scratchpad/write`, `scratchpad/append`, `scratchpad/read`, and `scratchpad/list`; scratchpad contents remain off-context until explicitly read and are not persisted across restarts.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Local terminal application

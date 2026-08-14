@@ -9,6 +9,7 @@ export const portaConfigSchema = z.object({
   authorization: z.object({ mode: z.enum(["allow-all", "require-approval"]) }).default({ mode: "require-approval" }),
   agent: z.object({ maxSteps: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional() }).default({}),
   conversation: z.object({ maxTurns: z.number().int().positive().optional() }).default({}),
+  filesystem: z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().optional(), maxReadBytes: z.number().int().positive().optional(), maxSummaryChars: z.number().int().positive().optional() }).optional(),
 });
 export type PortaConfig = z.infer<typeof portaConfigSchema>;
 /** @deprecated Use PortaConfig. */

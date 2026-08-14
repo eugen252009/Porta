@@ -1,0 +1,82 @@
+import { promises as fs } from "node:fs";
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { z } from "zod";
+import { ContentReductionRequest, ContentReductionResult, ContentReducer } from "./content-reducer.js";
+import { JsonValue, ModelContext, ModelProvider, ToolContext, ToolDescriptor, ToolInvocation, ToolProvider, ToolResult, failure } from "./contracts.js";
+
+export interface FilesystemProviderConfig { root: string; maxExactContextBytes?: number; maxReadBytes?: number; maxSummaryChars?: number }
+const configSchema = z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().default(65536), maxReadBytes: z.number().int().positive().default(8 * 1024 * 1024), maxSummaryChars: z.number().int().positive().default(12000) });
+const readSchema = z.object({ path: z.string().min(1), mode: z.enum(["exact", "summary"]).default("exact"), range: z.object({ startLine: z.number().int().positive().optional(), endLine: z.number().int().positive().optional() }).optional() }).strict();
+const pathSchema = z.object({ path: z.string().min(1) }).strict();
+
+export class FilesystemToolProvider implements ToolProvider {
+  readonly providerId = "filesystem";
+  private readonly config: Required<FilesystemProviderConfig>;
+  private readonly root: string;
+  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer()) {
+    this.config = configSchema.parse(config);
+    this.root = realpathSync(resolve(this.config.root));
+  }
+  async listTools(_context: ToolContext): Promise<readonly ToolDescriptor[]> {
+    return [
+      { id: "read_file", name: "filesystem/read_file", version: "1", description: "Read a text file. Use exact when exact source is required; use summary when semantic understanding is enough. Optional ranges are 1-based inclusive. Large exact content is rejected rather than silently truncated.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" }, mode: { enum: ["exact", "summary"] }, range: { type: "object" } } } },
+      { id: "list_directory", name: "filesystem/list_directory", version: "1", description: "List one directory deterministically without recursive traversal.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } } },
+      { id: "stat", name: "filesystem/stat", version: "1", description: "Return safe metadata for a file or directory.", inputSchema: { type: "object", required: ["path"], properties: { path: { type: "string" } } } },
+    ];
+  }
+  async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
+    try {
+      if (request.toolId === "read_file") return await this.readFile(request.input, context);
+      if (request.toolId === "list_directory") return await this.listDirectory(request.input);
+      if (request.toolId === "stat") return await this.stat(request.input);
+      return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Filesystem tool '${request.toolId}' is unavailable.`).error };
+    } catch (error) { return { ok: false, error: error instanceof Error && "error" in error ? (error as { error: import("./contracts.js").HarnessError }).error : failure("TOOL_FAILED", error instanceof Error ? error.message : "Filesystem operation failed.").error }; }
+  }
+  private async readFile(input: JsonValue, context: ToolContext): Promise<ToolResult> {
+    const parsed = readSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues);
+    const target = await this.safePath(parsed.data.path); const info = await fs.stat(target); if (!info.isFile()) return { ok: false, error: failure("VALIDATION_FAILED", "read_file requires a regular file.").error };
+    if (info.size > this.config.maxReadBytes) return { ok: false, error: failure("TOOL_FAILED", `File exceeds the maximum readable size of ${this.config.maxReadBytes} bytes.`).error };
+    const content = await fs.readFile(target); if (content.includes(0)) return { ok: false, error: failure("TOOL_FAILED", "Binary files are not supported by the text filesystem tool.").error };
+    const text = content.toString("utf8"); const selected = selectRange(text, parsed.data.range); if (selected.error) return { ok: false, error: selected.error };
+    if (parsed.data.mode === "exact") {
+      if (Buffer.byteLength(selected.content) > this.config.maxExactContextBytes) return { ok: false, error: failure("TOOL_FAILED", `Exact content exceeds the ${this.config.maxExactContextBytes}-byte context limit; use summary, exact line ranges, or a scratchpad note.`).error };
+      return { ok: true, output: { path: parsed.data.path, mode: "exact", content: selected.content, bytes: Buffer.byteLength(selected.content), ...(parsed.data.range ? { range: parsed.data.range } : {}) } };
+    }
+    const reduction: ContentReductionRequest = { content: selected.content, purpose: "summary", source: { kind: "file", path: parsed.data.path }, maxChars: this.config.maxSummaryChars };
+    const result = await this.reducer.reduce(reduction, context);
+    return { ok: true, output: { path: parsed.data.path, mode: "summary", summary: result.content, sourceBytes: content.byteLength, sourceChars: result.sourceChars } };
+  }
+  private async listDirectory(input: JsonValue): Promise<ToolResult> {
+    const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const info = await fs.stat(target); if (!info.isDirectory()) return { ok: false, error: failure("VALIDATION_FAILED", "list_directory requires a directory.").error };
+    const names = (await fs.readdir(target)).sort((a, b) => a.localeCompare(b)); const entries = [];
+    for (const name of names) { const entryPath = join(target, name); const entry = await fs.lstat(entryPath); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other"; entries.push({ name, kind, ...(entry.isFile() ? { size: entry.size } : {}) }); }
+    return { ok: true, output: { path: parsed.data.path, entries } };
+  }
+  private async stat(input: JsonValue): Promise<ToolResult> {
+    const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const entry = await fs.stat(target); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other"; return { ok: true, output: { path: parsed.data.path, kind, size: entry.size } };
+  }
+  private async safePath(requested: string): Promise<string> {
+    if (isAbsolute(requested)) throw failure("CAPABILITY_UNAVAILABLE", "Absolute filesystem paths are not allowed.");
+    const candidate = resolve(this.root, requested); if (!inside(this.root, candidate)) throw failure("CAPABILITY_UNAVAILABLE", "Path is outside the configured filesystem root.");
+    let canonical: string; try { canonical = await fs.realpath(candidate); } catch { throw failure("CAPABILITY_UNAVAILABLE", "Filesystem path does not exist or cannot be resolved."); }
+    if (!inside(this.root, canonical)) throw failure("CAPABILITY_UNAVAILABLE", "Resolved path is outside the configured filesystem root.");
+    return canonical;
+  }
+}
+
+export class DeterministicContentReducer implements ContentReducer {
+  async reduce(request: ContentReductionRequest): Promise<ContentReductionResult> { const max = request.maxChars ?? 12000; const normalized = request.content.replace(/\s+/g, " ").trim(); const content = normalized.length <= max ? normalized : `${normalized.slice(0, Math.max(0, max - 24))}… [summary truncated]`; return { content, sourceChars: request.content.length }; }
+}
+
+export class ModelContentReducer implements ContentReducer {
+  constructor(private readonly model: ModelProvider) {}
+  async reduce(request: ContentReductionRequest, context: ToolContext): Promise<ContentReductionResult> {
+    const prompt = `Summarize the supplied ${request.source?.kind ?? "content"} faithfully. Preserve important facts, identifiers, APIs, constraints, errors, TODOs, and control-flow relationships. Do not invent conclusions. Keep the result under ${request.maxChars ?? 12000} characters.\n\nSOURCE:\n${request.content}`;
+    let content = ""; for await (const event of this.model.generate({ schemaVersion: 1, requestId: `reduction-${context.executionId}`, input: prompt }, { ...context, executionId: `${context.executionId}:reduction` } as ModelContext)) { if (event.type === "delta") content += event.text; if (event.type === "tool-call") throw failure("MODEL_FAILED", "Content reduction model attempted a tool call."); }
+    return { content, sourceChars: request.content.length };
+  }
+}
+function inside(root: string, target: string): boolean { const path = relative(root, target); return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path)); }
+function selectRange(text: string, range?: { startLine?: number; endLine?: number }): { content: string; error?: import("./contracts.js").HarnessError } { if (!range) return { content: text }; const lines = text.split(/\r?\n/); const start = range.startLine ?? 1; const end = range.endLine ?? lines.length; if (start > end || start > lines.length) return { content: "", error: failure("VALIDATION_FAILED", "Line range is invalid.").error }; return { content: lines.slice(start - 1, Math.min(end, lines.length)).join("\n") }; }
+function invalid(issues: unknown): ToolResult { return { ok: false, error: failure("VALIDATION_FAILED", "Filesystem arguments are invalid.", false, { issues }).error }; }

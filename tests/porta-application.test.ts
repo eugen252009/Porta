@@ -8,6 +8,11 @@ const config = () => parsePortaConfig({ model: { provider: "ollama", baseUrl: "h
 
 describe("Porta application composition", () => {
   it("rejects missing model configuration", () => expect(() => parsePortaConfig({ model: { provider: "ollama", baseUrl: "not-url" } })).toThrow());
+  it("registers configured filesystem and scratchpad tools", async () => {
+    const app = await createPortaApplication({ ...config(), filesystem: { root: "." } }, { model: () => new MockModelProvider("ready") });
+    expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/read_file", "filesystem/list_directory", "filesystem/stat", "scratchpad/read", "scratchpad/write"]));
+    await app.shutdown();
+  });
   it("composes a healthy text-only application without contacting Ollama", async () => {
     const app = await createPortaApplication(config(), { model: () => new MockModelProvider("ready") });
     await app.start();
