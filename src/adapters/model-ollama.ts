@@ -58,6 +58,7 @@ export class OllamaModelProvider implements ModelProvider, HealthCheckable {
   get descriptor(): ModelDescriptor { return { id: "ollama", version: "1", capabilities: [textCapability, capability, ...(this.toolSupport ? [toolsCapability] : [])] }; }
   private readonly config: OllamaModelProviderConfig;
   private readonly fetch: FetchLike;
+  private nextToolCallId = 0;
 
   constructor(config: OllamaModelProviderConfig, fetchLike: FetchLike = fetch) {
     this.config = ollamaModelProviderConfigSchema.parse(config);
@@ -89,7 +90,7 @@ export class OllamaModelProvider implements ModelProvider, HealthCheckable {
         if (completed) break;
       }
       if (!completed) throw failure("MODEL_FAILED", "Ollama ended the stream before completion.");
-      for (const call of pendingCalls) yield callEvent(call);
+      for (const call of pendingCalls) yield callEvent({ ...call, id: `ollama-tool-${this.nextToolCallId++}` });
       yield { type: "completed" };
     } catch (error) {
       if (error instanceof HarnessFailure) throw error;

@@ -18,6 +18,13 @@ describe("Ollama adapter", () => {
   });
   it("maps colliding provider-scoped tools to distinct native names", () => { const tools = [{ id: "server-a/echo", name: "echo", version: "1", inputSchema: {} }, { id: "server-b/echo", name: "echo", version: "1", inputSchema: {} }]; const mapped = mapToolsToOllama(tools); expect(mapped.mappings.map((entry) => entry.nativeName)).toEqual(["harness_tool_0", "harness_tool_1"]); expect(mapped.mappings.map((entry) => entry.canonicalId)).toEqual(["server-a/echo", "server-b/echo"]); });
   it("maps native tool calls back to canonical identity", () => { const event = mapOllamaChunk({ message: { tool_calls: [{ function: { name: "harness_tool_1", arguments: { value: "ok" } } }] }, done: false }, new Map([["harness_tool_1", "server-b/echo"]]))!; expect(event).toEqual({ type: "tool-call", call: { id: "ollama-tool-0", toolId: "server-b/echo", input: { value: "ok" } } }); });
+  it("keeps tool-call IDs unique across sequential model turns", async () => {
+    const provider = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async () => response(stream([`{"message":{"tool_calls":[{"function":{"name":"harness_tool_0","arguments":{}}}]},"done":false}\n{"done":true}\n`])));
+    const tools = [{ id: "fixture/tool", name: "fixture/tool", version: "1", inputSchema: {} }];
+    const first = (await collect(provider.generate({ ...request, tools }, context()))).find((event) => event.type === "tool-call");
+    const second = (await collect(provider.generate({ ...request, tools }, context()))).find((event) => event.type === "tool-call");
+    expect(first?.type === "tool-call" ? first.call.id : undefined).not.toBe(second?.type === "tool-call" ? second.call.id : undefined);
+  });
   it("parses multiple records and records split across reads", async () => {
     const provider = new OllamaModelProvider({ baseUrl: "http://provider.test", model: "generic-model" }, async (_input, init) => { expect(init?.method).toBe("POST"); expect(JSON.parse(String(init?.body))).toMatchObject({ model: "generic-model" }); return response(stream([`{"message":{"content":"a"},"done":false}\n{"message":{"content":"b"},`, `"done":false}\n{"done":true}\n`])); });
     expect(await collect(provider.generate(request, context()))).toEqual([{ type: "delta", text: "a" }, { type: "delta", text: "b" }, { type: "completed" }]);
