@@ -17,6 +17,10 @@ describe("Porta application composition", () => {
     const app = await createPortaApplication({ ...config(), filesystem: { root: ".", mutation: { enabled: true } } }, { model: () => new MockModelProvider("ready") });
     expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/write_file", "filesystem/patch_file"])); await app.shutdown();
   });
+  it("registers execution only when explicitly enabled", async () => {
+    const root = process.cwd(); const disabled = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, execution: { enabled: false } }), { model: () => new MockModelProvider("ready") }); expect(disabled.toolRouter.listTools().some((tool) => tool.canonicalId === "execution/run")).toBe(false); await disabled.shutdown();
+    const enabled = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, execution: { enabled: true, allowedCommands: ["node"] } }), { model: () => new MockModelProvider("ready") }); expect(enabled.toolRouter.listTools().some((tool) => tool.canonicalId === "execution/run")).toBe(true); await enabled.shutdown();
+  });
   it("composes a healthy text-only application without contacting Ollama", async () => {
     const app = await createPortaApplication(config(), { model: () => new MockModelProvider("ready") });
     await app.start();

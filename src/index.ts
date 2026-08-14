@@ -25,4 +25,7 @@ export * from "./scratchpad.js";
 export * from "./search.js";
 export * from "./mutation.js";
 export * from "./workspace.js";
+export * from "./execution.js";
+export * from "./adapters/runtime-host-process.js";
+export * from "./adapters/sandbox-host-process.js";
 export * from "./terminal.js";

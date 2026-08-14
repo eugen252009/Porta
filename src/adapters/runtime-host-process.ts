@@ -1,0 +1,32 @@
+import { spawn } from "node:child_process";
+import { executionId } from "../runtime.js";
+import { ExecutionContext, ExecutionRequest, ExecutionResult, HarnessError, HarnessPlugin, RuntimeEvent, RuntimeExecution, RuntimeHost, SandboxSession, failure } from "../contracts.js";
+
+export interface HostProcess { readonly stdin: { end(data?: string): void }; readonly stdout: AsyncIterable<Buffer>; readonly stderr: AsyncIterable<Buffer>; readonly exited: Promise<{ code: number | null; signal?: string | null }>; kill(signal?: NodeJS.Signals): void }
+export type HostProcessLauncher = (executable: string, args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => HostProcess;
+const defaultLauncher: HostProcessLauncher = (executable, args, options) => { const child = spawn(executable, [...args], { cwd: options.cwd, env: options.env, shell: false, stdio: ["pipe", "pipe", "pipe"] }); child.on("error", () => undefined); return { stdin: child.stdin, stdout: child.stdout, stderr: child.stderr, exited: new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal }))), kill: (signal) => child.kill(signal) }; };
+
+export class HostProcessRuntime implements RuntimeHost {
+  readonly descriptor = { id: "runtime.host-process", version: "1" };
+  constructor(private readonly launch: HostProcessLauncher = defaultLauncher) {}
+  async createExecution(request: ExecutionRequest, context: ExecutionContext, _sandbox: SandboxSession): Promise<RuntimeExecution> {
+    if (!request.executable) throw failure("VALIDATION_FAILED", "Host process execution requires an executable.");
+    if (!request.workingDirectory) throw failure("VALIDATION_FAILED", "Host process execution requires a working directory.");
+    let process: HostProcess; try { process = this.launch(request.executable, [...(request.args ?? [])], { cwd: request.workingDirectory, env: request.environment ?? {} }); } catch (error) { throw failure("RUNTIME_FAILED", "Process could not be started.", true, { cause: error instanceof Error ? error.message : "spawn failure" }); }
+    if (request.stdin !== undefined) process.stdin.end(request.stdin); else process.stdin.end(); return new HostProcessExecution(process, context);
+  }
+}
+
+class HostProcessExecution implements RuntimeExecution {
+  readonly id = executionId(); private readonly queue = new AsyncQueue<RuntimeEvent>(); private readonly completion: Promise<ExecutionResult>; private resolveResult!: (result: ExecutionResult) => void; private terminalCause?: "cancelled" | "timed-out"; private terminal = false; private running: Promise<void>;
+  constructor(private readonly process: HostProcess, private readonly context: ExecutionContext) { this.completion = new Promise((resolve) => { this.resolveResult = resolve; }); this.context.signal.addEventListener("abort", () => { void this.cancel("cancelled"); }, { once: true }); if (context.deadline !== undefined) setTimeout(() => { if (!this.terminal) { this.terminalCause = "timed-out"; this.process.kill("SIGTERM"); } }, Math.max(0, context.deadline - Date.now())); this.running = this.consume(); }
+  events(): AsyncIterable<RuntimeEvent> { return this.queue; }
+  async cancel(reason?: string): Promise<void> { if (!this.terminalCause) this.terminalCause = reason === "deadline" ? "timed-out" : "cancelled"; if (!this.terminal) this.process.kill("SIGTERM"); await this.running; }
+  result(): Promise<ExecutionResult> { return this.completion; }
+  private async consume(): Promise<void> { this.push({ type: "started", executionId: this.id }); await Promise.all([this.read(this.process.stdout, "stdout"), this.read(this.process.stderr, "stderr")]); const exit = await this.process.exited; if (this.terminalCause) { const timedOut = this.terminalCause === "timed-out"; this.finish({ executionId: this.id, status: timedOut ? "timed-out" : "cancelled", error: timedOut ? { code: "TIMEOUT", message: "Host process exceeded its deadline.", retryable: true } : undefined }); return; } if (exit.code === null) { this.finish({ executionId: this.id, status: "failed", error: { code: "RUNTIME_FAILED", message: "Host process ended without an exit code.", retryable: false, details: { signal: exit.signal ?? undefined } } }); return; } this.push({ type: "exited", exitCode: exit.code }); this.finish({ executionId: this.id, status: "completed", exitCode: exit.code }); }
+  private async read(stream: AsyncIterable<Buffer>, type: "stdout" | "stderr") { for await (const chunk of stream) this.push({ type, data: chunk.toString() }); }
+  private push(event: RuntimeEvent) { if (!this.terminal) this.queue.push(event); }
+  private finish(result: ExecutionResult) { if (this.terminal) return; this.terminal = true; if (result.status === "completed") this.queue.push({ type: "completed" }); else if (result.status === "cancelled" || result.status === "timed-out") this.queue.push({ type: "cancelled" }); else if (result.error) this.queue.push({ type: "failed", error: result.error }); this.resolveResult(result); this.queue.close(); }
+}
+class AsyncQueue<T> implements AsyncIterable<T> { private readonly values: T[] = []; private waiter?: (result: IteratorResult<T>) => void; private closed = false; push(value: T) { if (this.closed) return; if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter({ value, done: false }); } else this.values.push(value); } close() { this.closed = true; this.waiter?.({ value: undefined as T, done: true }); this.waiter = undefined; } [Symbol.asyncIterator]() { return { next: async () => this.values.length ? { value: this.values.shift()!, done: false } : this.closed ? { value: undefined as T, done: true } : new Promise<IteratorResult<T>>((resolve) => { this.waiter = resolve; }) }; } }
+export function hostProcessPlugin(runtime: HostProcessRuntime): HarnessPlugin { return { manifest: { schemaVersion: 1, id: "runtime.host-process", version: "1", provides: [{ id: "runtime.execution", version: "1" }], requires: [] }, register(registrar) { registrar.provide({ id: "runtime.execution", version: "1" }, runtime); } }; }

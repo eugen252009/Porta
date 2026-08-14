@@ -1,0 +1,28 @@
+import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ExecutionToolProvider } from "../src/execution.js";
+import { HostProcess, HostProcessLauncher, HostProcessRuntime } from "../src/adapters/runtime-host-process.js";
+import { HostProcessSandbox } from "../src/adapters/sandbox-host-process.js";
+import { ToolContext, ToolInvocation } from "../src/contracts.js";
+import { ToolRouter } from "../src/tools.js";
+import { AgentOrchestrator } from "../src/agent.js";
+import { ScriptedToolModelProvider } from "../src/agent-mocks.js";
+import { StaticToolAuthorizationPolicy } from "../src/authorization-mocks.js";
+import { PendingApprovalProvider } from "../src/approval-pending.js";
+
+const context = (signal = new AbortController().signal, deadline?: number): ToolContext => ({ traceId: "trace", sessionId: "session", executionId: "execution", signal, deadline });
+const invoke = (input: unknown): ToolInvocation => ({ schemaVersion: 1, requestId: "run", toolId: "run", input: input as never });
+function processFixture(stdout: string, stderr = "", code = 0, wait = false) { let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; }); let killed = false; let resolveExit!: (value: { code: number | null; signal?: string }) => void; const exited = new Promise<{ code: number | null; signal?: string }>((resolve) => { resolveExit = resolve; }); const stream = async function* (value: string) { if (value) yield Buffer.from(value); if (wait) await gate; }; const process: HostProcess = { stdin: { end() {} }, stdout: stream(stdout), stderr: stream(stderr), exited: wait ? exited : Promise.resolve({ code }), kill() { killed = true; release(); resolveExit({ code: null, signal: "SIGTERM" }); } }; return { process, wasKilled: () => killed, release: () => { release(); resolveExit({ code }); } }; }
+function provider(launcher: HostProcessLauncher, overrides: Partial<ConstructorParameters<typeof ExecutionToolProvider>[2]> = {}) { return new ExecutionToolProvider(new HostProcessRuntime(launcher), new HostProcessSandbox(), { workspaceRoot: mkdtempSync(join(tmpdir(), "porta-exec-")), allowedCommands: ["node", "npm"], defaultTimeoutMs: 1000, maxStdoutBytes: 32, maxStderrBytes: 32, policy: { filesystem: "best-effort", network: "best-effort", codeLoading: "best-effort" }, ...overrides }); }
+
+describe("composable execution", () => {
+  it("runs structured argv without shell interpolation and preserves nonzero exit", async () => { let captured: { command: string; args: readonly string[] } | undefined; const fixture = processFixture("tests failed", "details", 1); const tool = provider((command, args) => { captured = { command, args }; return fixture.process; }); const result = await tool.invoke(invoke({ command: "npm", args: ["test", "; touch SHOULD_NOT_EXIST"], cwd: "." }), context()); expect(result).toMatchObject({ ok: true, output: { status: "completed", exitCode: 1, stdout: "tests failed", stderr: "details" } }); expect(captured).toEqual({ command: "npm", args: ["test", "; touch SHOULD_NOT_EXIST"] }); });
+  it("bounds stdout and stderr with explicit truncation", async () => { const fixture = processFixture("12345678901234567890"); const tool = provider(() => fixture.process, { maxStdoutBytes: 8 }); const result = await tool.invoke(invoke({ command: "node" }), context()); expect(result).toMatchObject({ ok: true, output: { stdoutTruncated: true } }); });
+  it("rejects disallowed commands and cwd escapes before spawning", async () => { let launches = 0; const tool = provider(() => { launches++; return processFixture("").process; }); expect((await tool.invoke(invoke({ command: "sh" }), context())).ok).toBe(false); expect((await tool.invoke(invoke({ command: "node", cwd: "../outside" }), context())).ok).toBe(false); expect(launches).toBe(0); });
+  it("cancels and times out running processes", async () => { const cancelled = processFixture("", "", 0, true); const controller = new AbortController(); const tool = provider(() => cancelled.process); const running = tool.invoke(invoke({ command: "node" }), context(controller.signal)); await new Promise((resolve) => setTimeout(resolve, 0)); controller.abort(); expect(await running).toMatchObject({ ok: true, output: { status: "cancelled", cancelled: true } }); expect(cancelled.wasKilled()).toBe(true);
+    const timed = processFixture("", "", 0, true); const timeoutTool = provider(() => timed.process, { defaultTimeoutMs: 5 }); expect(await timeoutTool.invoke(invoke({ command: "node" }), context())).toMatchObject({ ok: true, output: { status: "timed-out", timedOut: true } }); expect(timed.wasKilled()).toBe(true); });
+  it("authorization denial launches zero runtime processes", async () => { let launches = 0; const tool = provider(() => { launches++; return processFixture("").process; }); const router = new ToolRouter(); await router.register("execution", tool, context()); const model = new ScriptedToolModelProvider([[{ type: "tool", id: "run", toolId: "execution/run", input: { command: "node" } }], [{ type: "text", text: "denied" }]]); const execution = new AgentOrchestrator(model, router, undefined, { policy: new StaticToolAuthorizationPolicy("deny"), approvalProvider: new PendingApprovalProvider() }).create("run", context(), router.listTools()); await collect(execution.events()); expect(launches).toBe(0); });
+});
+async function collect<T>(source: AsyncIterable<T>): Promise<T[]> { const values: T[] = []; for await (const value of source) values.push(value); return values; }
