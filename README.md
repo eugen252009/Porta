@@ -46,6 +46,14 @@ The deterministic self-qualification E2E in `tests/e2e.test.ts` drives a broken 
 
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
+Optional real-model qualification runs only when explicitly requested:
+
+```bash
+OLLAMA_MODEL="your-configured-model" npm run qualify:live
+```
+
+It uses three fresh temporary local Git fixtures (localized bug, cross-file discovery, and large diagnostic artifact), normal Porta composition, bounded budgets, and writes JSON reports under `.tmp/porta-qualification/`. Compaction is enabled in the live configuration; dedicated persisted-resume qualification remains deferred. It is not part of the default test suite and requires no remote repository or network Git.
+
 ## Local terminal application
 
 Start Porta with `npm run porta`. The legacy `npm run harness` command remains an alias. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `PORTA_CONFIG` to a JSON file (the deprecated `HARNESS_CONFIG` variable remains a fallback) using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), optional agent limits, and `conversation.maxTurns` for deterministic context budgeting. For example:

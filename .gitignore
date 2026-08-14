@@ -4,3 +4,4 @@ dist/
 .cocoindex_code/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+.tmp/porta-qualification/

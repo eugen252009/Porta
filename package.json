@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "porta": "npm run build && node dist/src/main.js",
-    "harness": "npm run porta"
+    "harness": "npm run porta",
+    "qualify:live": "npm run build && node dist/tests/qualification/cli.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
