@@ -36,6 +36,8 @@ Controlled command execution is opt-in through `execution.enabled` and requires 
 
 Task progress is session-scoped and in-memory. The `task/create`, `task/get`, and versioned `task/update` tools maintain ordered steps, verification criteria, immutable evidence, and completion guards. Task state is injected as bounded control context and survives conversation compaction independently of conversation history.
 
+Local Git inspection is opt-in through `git.enabled` and exposes structured `git/status`, `git/diff`, `git/show`, and `git/log` tools. The CLI backend uses direct argv, `GIT_TERMINAL_PROMPT=0`, bounded output, and the configured workspace as the repository root. Remote operations and commits are intentionally not implemented.
+
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
 ## Local terminal application

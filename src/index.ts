@@ -32,4 +32,6 @@ export * from "./adapters/sandbox-bubblewrap.js";
 export * from "./process-wrapper.js";
 export * from "./sandbox-selection.js";
 export * from "./task.js";
+export * from "./process-runner.js";
+export * from "./git.js";
 export * from "./terminal.js";

@@ -21,6 +21,7 @@ describe("Porta application composition", () => {
     const root = process.cwd(); const disabled = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, execution: { enabled: false } }), { model: () => new MockModelProvider("ready") }); expect(disabled.toolRouter.listTools().some((tool) => tool.canonicalId === "execution/run")).toBe(false); await disabled.shutdown();
     const enabled = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, execution: { enabled: true, allowedCommands: ["node"] } }), { model: () => new MockModelProvider("ready") }); expect(enabled.toolRouter.listTools().some((tool) => tool.canonicalId === "execution/run")).toBe(true); await enabled.shutdown();
   });
+  it("keeps Git optional when disabled or unavailable", async () => { const root = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "porta-no-git-")); const app = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, git: { enabled: true, executable: "/missing/git" } }), { model: () => new MockModelProvider("ready") }); expect(app.toolRouter.listTools().some((tool) => tool.canonicalId.startsWith("git/"))).toBe(false); await app.shutdown(); });
   it("composes a healthy text-only application without contacting Ollama", async () => {
     const app = await createPortaApplication(config(), { model: () => new MockModelProvider("ready") });
     await app.start();

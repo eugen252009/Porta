@@ -22,6 +22,7 @@ import { HarnessFailure, RuntimeHost, SandboxProvider } from "./contracts.js";
 import { planPlugins } from "./plugin-preflight.js";
 import { PendingApprovalProvider } from "./approval-pending.js";
 import { MemoryTaskStore, TaskStore, TaskToolProvider } from "./task.js";
+import { CliGitBackend, GitBackend, GitToolProvider } from "./git.js";
 import { ToolRouter } from "./tools.js";
 
 export interface PortaApplication {
@@ -36,7 +37,7 @@ export interface PortaApplication {
   shutdown(): Promise<void>;
 }
 
-export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; taskStore?: TaskStore; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; taskStore?: TaskStore; gitBackend?: GitBackend; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
@@ -48,6 +49,7 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
   const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
   const filesystemEngine = filesystemRoot ? selectSearchEngine(new FilesystemSearchSource(filesystemRoot, config.filesystem?.maxReadBytes ?? 8 * 1024 * 1024), searchCandidates) ?? new LinearTextSearchEngine() : undefined;
   const filesystem = config.filesystem ? new FilesystemToolProvider(config.filesystem, factories.contentReducer ?? new ModelContentReducer(model), filesystemEngine, factories.mutationEngine) : undefined;
+  const git = config.git?.enabled && filesystemRoot ? await (async () => { const backend = factories.gitBackend ?? new CliGitBackend({ root: filesystemRoot, executable: config.git!.executable, maxDiffBytes: config.git!.maxDiffBytes, maxShowBytes: config.git!.maxShowBytes, maxLogEntries: config.git!.maxLogEntries }); const available = backend.available ? await backend.available() : true; return available ? new GitToolProvider(backend) : undefined; })() : undefined;
   const execution = config.execution?.enabled ? await (async () => {
     const executionConfig = config.execution!;
     if (!config.filesystem?.root || !filesystemRoot) throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "Execution requires a configured filesystem root.", retryable: false });
@@ -57,7 +59,7 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     const sandbox = factories.executionSandbox ?? (await selectSandbox({ filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, candidates.map((provider) => { const available = (provider as SandboxProvider & { available?: () => Promise<boolean> }).available; return available ? { provider, available: () => available.call(provider) } : { provider }; }), executionConfig.sandbox.preference)).provider;
     return new ExecutionToolProvider(runtime, sandbox, { workspaceRoot: filesystemRoot, allowedCommands: executionConfig.allowedCommands, defaultTimeoutMs: executionConfig.defaultTimeoutMs, maxStdoutBytes: executionConfig.maxStdoutBytes, maxStderrBytes: executionConfig.maxStderrBytes, policy: { filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, environment: executionConfig.environment, allowedEnvironmentKeys: executionConfig.allowedEnvironmentKeys });
   })() : undefined;
-  const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), ...(execution ? [{ id: "execution", provider: execution as ToolProvider }] : []), { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }, { id: "task", provider: new TaskToolProvider(tasks) }];
+  const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), ...(execution ? [{ id: "execution", provider: execution as ToolProvider }] : []), ...(git ? [{ id: "git", provider: git as ToolProvider }] : []), { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }, { id: "task", provider: new TaskToolProvider(tasks) }];
   const modelManifest = { schemaVersion: 1 as const, id: "model.ollama", version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
   const manifests = [modelManifest, ...registrations.map((registration) => ({ schemaVersion: 1 as const, id: `tools.${registration.id}`, version: "1", provides: [{ id: "tools.discovery", version: "1" }, { id: "tools.invoke", version: "1" }], requires: [] }))];
   const plan = planPlugins(manifests);

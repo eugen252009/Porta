@@ -28,4 +28,5 @@ describe("architecture boundaries", () => {
   it("keeps mutation engine independent from agent and providers", () => { const source = readFileSync(join(process.cwd(), "src/mutation.ts"), "utf8"); expect(source).not.toMatch(/AgentExecution|Ollama|MCP|Scratchpad|Conversation/); });
   it("keeps execution tool independent from shell and model providers", () => { const source = readFileSync(join(process.cwd(), "src/execution.ts"), "utf8"); expect(source).not.toMatch(/Ollama|MCP|AgentExecution|child_process|bash|powershell/i); });
   it("keeps task state provider-neutral and out of agent ownership", () => { expect(readFileSync(join(process.cwd(), "src/task.ts"), "utf8")).not.toMatch(/Ollama|MCP|FilesystemToolProvider|ExecutionToolProvider/); expect(readFileSync(join(process.cwd(), "src/agent.ts"), "utf8")).not.toMatch(/TaskStore|TaskToolProvider/); });
+  it("keeps Git behind its backend and away from task/filesystem ownership", () => { const source = readFileSync(join(process.cwd(), "src/git.ts"), "utf8"); expect(source).not.toMatch(/TaskStore|FilesystemMutationEngine|ExecutionToolProvider|ToolRouter/); });
 });
