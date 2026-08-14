@@ -6,7 +6,7 @@ import { PendingApprovalProvider } from "../src/approval-pending.js";
 import { MemoryConversationStore } from "../src/conversation.js";
 import { DeterministicConversationCompactor, ConversationCompactor } from "../src/compaction.js";
 import { MemoryScratchpadStore, ScratchpadToolProvider } from "../src/scratchpad.js";
-import { KernelEvent, ToolContext } from "../src/contracts.js";
+import { HarnessFailure, KernelEvent, ToolContext } from "../src/contracts.js";
 import { ToolRouter } from "../src/tools.js";
 
 async function collect(source: AsyncIterable<KernelEvent>): Promise<KernelEvent[]> { const result: KernelEvent[] = []; for await (const event of source) result.push(event); return result; }
@@ -38,6 +38,10 @@ describe("conversation compaction", () => {
 
   it("falls back to deterministic recent history when compaction fails", async () => {
     const failing: ConversationCompactor = { compact: async () => { throw new Error("compactor unavailable"); } }; const { gateway, model } = setup(failing); const sessionId = await createSession(gateway); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "second" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "third" }, {})); expect(model.received[2]?.control).toEqual([]); expect(model.received[2]?.messages).toEqual(expect.arrayContaining([{ role: "user", content: "second" }]));
+  });
+
+  it("does not start an execution when compaction times out", async () => {
+    const timedOut: ConversationCompactor = { compact: async () => { throw new HarnessFailure({ code: "TIMEOUT", message: "compaction timeout", retryable: true }); } }; const { gateway, model } = setup(timedOut); const sessionId = await createSession(gateway); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "second" }, {})); const events = await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "third" }, {})); expect(events.at(-1)).toMatchObject({ type: "Error", error: { code: "TIMEOUT" } }); expect(model.received).toHaveLength(2);
   });
 
   it("does not start an execution when compaction is cancelled", async () => {
