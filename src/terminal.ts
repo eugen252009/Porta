@@ -33,7 +33,7 @@ export async function runTerminal(gateway: ApplicationGateway, input: TerminalIn
   const created = await collect(gateway, { type: "CreateSession" }, {});
   const sessionId = created.find((event): event is Extract<KernelEvent, { type: "SessionCreated" }> => event.type === "SessionCreated")?.sessionId;
   if (!sessionId) throw new Error("Could not create terminal session.");
-  output.write("Harness ready.\n\n> ");
+  output.write("Porta ready.\n\n> ");
   let stopping = false;
   const cancel = async () => { if (!stopping) { stopping = true; await collect(gateway, { type: "CancelExecution", sessionId }, {}); } };
   const onSignal = () => { input.close(); void cancel(); };

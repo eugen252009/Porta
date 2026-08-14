@@ -2,13 +2,13 @@ import { MCPToolProvider } from "./adapters/tool-mcp.js";
 import { OllamaModelProvider } from "./adapters/model-ollama.js";
 import { InteractiveApprovalGateway } from "./application-gateway.js";
 import { AllowAllToolAuthorizationPolicy, StaticToolAuthorizationPolicy } from "./authorization-mocks.js";
-import { HarnessConfig } from "./harness-config.js";
+import { PortaConfig } from "./porta-config.js";
 import { HarnessFailure, ModelProvider, ToolContext } from "./contracts.js";
 import { planPlugins } from "./plugin-preflight.js";
 import { PendingApprovalProvider } from "./approval-pending.js";
 import { ToolRouter } from "./tools.js";
 
-export interface HarnessApplication {
+export interface PortaApplication {
   readonly gateway: InteractiveApprovalGateway;
   readonly pendingApprovals: PendingApprovalProvider;
   readonly toolRouter: ToolRouter;
@@ -16,15 +16,15 @@ export interface HarnessApplication {
   shutdown(): Promise<void>;
 }
 
-export interface HarnessFactories { model?: (config: HarnessConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider }
+export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider }
 
-export async function createHarnessApplication(config: HarnessConfig, factories: HarnessFactories = {}): Promise<HarnessApplication> {
+export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
   const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
   const providers = config.tools.map((tool) => factories.mcp?.({ providerId: tool.id, ...tool.transport }) ?? new MCPToolProvider({ providerId: tool.id, ...tool.transport }));
   const modelManifest = { schemaVersion: 1 as const, id: "model.ollama", version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
   const manifests = [modelManifest, ...providers.map((provider) => ({ schemaVersion: 1 as const, id: `tools.mcp.${provider.providerId}`, version: "1", provides: [{ id: "tools.discovery", version: "1" }, { id: "tools.invoke", version: "1" }], requires: [] }))];
   const plan = planPlugins(manifests);
-  if (plan.status !== "ready") throw new HarnessFailure({ code: "PLUGIN_INVALID", message: "Harness plugin preflight failed.", retryable: false, details: plan.diagnostics });
+  if (plan.status !== "ready") throw new HarnessFailure({ code: "PLUGIN_INVALID", message: "Porta plugin preflight failed.", retryable: false, details: plan.diagnostics });
   const healthy: { close?: () => Promise<void> }[] = [];
   try {
     if ("health" in model && typeof model.health === "function") { const status = await model.health(); if (status.status !== "healthy") throw new HarnessFailure({ code: "CAPABILITY_UNAVAILABLE", message: status.message ?? "Model provider is unhealthy.", retryable: false, details: status }); }
@@ -36,6 +36,13 @@ export async function createHarnessApplication(config: HarnessConfig, factories:
     const policy = config.authorization.mode === "allow-all" ? new AllowAllToolAuthorizationPolicy() : new StaticToolAuthorizationPolicy("require-approval");
     const gateway = new InteractiveApprovalGateway(model, router, pending, policy, { maxSteps: config.agent.maxSteps ?? 8, maxToolCalls: config.agent.maxToolCalls ?? 16 });
     let stopped = false;
-    return { gateway, pendingApprovals: pending, toolRouter: router, async start() { if (stopped) throw new Error("Harness application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...providers].reverse()) await provider.close(); } };
+    return { gateway, pendingApprovals: pending, toolRouter: router, async start() { if (stopped) throw new Error("Porta application is shut down."); }, async shutdown() { if (stopped) return; stopped = true; await gateway.shutdown(); for (const provider of [...providers].reverse()) await provider.close(); } };
   } catch (error) { for (const provider of [...healthy].reverse()) await provider.close?.(); throw error; }
 }
+
+/** @deprecated Use PortaApplication. */
+export type HarnessApplication = PortaApplication;
+/** @deprecated Use PortaFactories. */
+export type HarnessFactories = PortaFactories;
+/** @deprecated Use createPortaApplication. */
+export const createHarnessApplication = createPortaApplication;

@@ -13,12 +13,12 @@ describe("architecture boundaries", () => {
   });
   it("keeps Ollama imports confined to its adapter", () => {
     const sourceFiles = files(join(process.cwd(), "src"));
-    for (const file of sourceFiles.filter((file) => !file.includes("model-ollama") && !file.includes("harness-application") && !file.includes("harness-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/ollama/i);
+    for (const file of sourceFiles.filter((file) => !file.includes("model-ollama") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/ollama/i);
   });
   it("keeps runtime and sandbox ports free of concrete adapter imports", () => { for (const file of ["src/contracts.ts", "src/runtime.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/mock-runtime|mock-sandbox|deno|node-runtime|bun|bubblewrap|container/i); });
   it("keeps Deno knowledge confined to Deno adapter modules", () => { for (const file of files(join(process.cwd(), "src")).filter((file) => !file.includes("runtime-deno") && !file.includes("sandbox-deno-permissions") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/deno|deno\.permissions/i); });
   it("keeps tool router and contracts protocol-neutral", () => { for (const file of ["src/contracts.ts", "src/tools.ts", "src/tool-mocks.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/mcp|json-rpc|openai|anthropic/i); });
-  it("keeps MCP imports confined to the adapter", () => { for (const file of files(join(process.cwd(), "src")).filter((file) => !file.includes("tool-mcp") && !file.includes("harness-application") && !file.includes("harness-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/modelcontextprotocol|MCP/i); });
+  it("keeps MCP imports confined to the adapter", () => { for (const file of files(join(process.cwd(), "src")).filter((file) => !file.includes("tool-mcp") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/modelcontextprotocol|MCP/i); });
   it("keeps agent orchestration provider-neutral", () => { for (const file of ["src/agent.ts", "src/agent-mocks.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/ollama|mcp|deno|openai|anthropic/i); });
   it("keeps interactive approval generic", () => { for (const file of ["src/application-gateway.ts", "src/approval-pending.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/ollama|mcp|deno|react|browser|tui|http|websocket/i); expect(readFileSync(join(process.cwd(), "src/agent.ts"), "utf8")).not.toMatch(/application-gateway|ApplicationGateway/); });
 });

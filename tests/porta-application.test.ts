@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { MockModelProvider } from "../src/adapters.js";
 import { InteractiveApprovalGateway } from "../src/application-gateway.js";
-import { createHarnessApplication } from "../src/harness-application.js";
-import { parseHarnessConfig } from "../src/harness-config.js";
+import { createPortaApplication } from "../src/porta-application.js";
+import { parsePortaConfig } from "../src/porta-config.js";
 
-const config = () => parseHarnessConfig({ model: { provider: "ollama", baseUrl: "http://localhost:11434", model: "test-model" }, tools: [] });
+const config = () => parsePortaConfig({ model: { provider: "ollama", baseUrl: "http://localhost:11434", model: "test-model" }, tools: [] });
 
-describe("production harness composition", () => {
-  it("rejects missing model configuration", () => expect(() => parseHarnessConfig({ model: { provider: "ollama", baseUrl: "not-url" } })).toThrow());
+describe("Porta application composition", () => {
+  it("rejects missing model configuration", () => expect(() => parsePortaConfig({ model: { provider: "ollama", baseUrl: "not-url" } })).toThrow());
   it("composes a healthy text-only application without contacting Ollama", async () => {
-    const app = await createHarnessApplication(config(), { model: () => new MockModelProvider("ready") });
+    const app = await createPortaApplication(config(), { model: () => new MockModelProvider("ready") });
     await app.start();
     const created = [...(await collect(app.gateway, { type: "CreateSession" }))];
     const sessionId = created.find((event) => event.type === "SessionCreated")!.sessionId;

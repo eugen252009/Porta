@@ -1,6 +1,8 @@
-# Generic Agent Harness
+# Porta
 
-A domain-neutral, capability-based harness with a small microkernel, stable contracts, explicit composition, and replaceable adapters.
+Porta is a modular, provider-neutral agent harness for models, tools, runtimes, sandboxes, approvals, and frontends. It provides a domain-neutral capability-based core with stable contracts, explicit composition, and replaceable adapters.
+
+**Coffee Maker Studio**
 
 The initial foundation is headless. It includes runtime-validated contracts, side-effect-free plugin validation and load planning, capability resolution, plugin lifecycle primitives, session orchestration, cancellation and deadlines, canonical errors, and deterministic in-memory adapters.
 
@@ -24,9 +26,9 @@ Agent execution is a provider-neutral loop over `ModelProvider` and `ToolRouter`
 
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
-## Local terminal harness
+## Local terminal application
 
-Start the production shell with `npm run harness`. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `HARNESS_CONFIG` to a JSON file using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), and optional agent limits. For example:
+Start Porta with `npm run porta`. The legacy `npm run harness` command remains an alias. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `PORTA_CONFIG` to a JSON file (the deprecated `HARNESS_CONFIG` variable remains a fallback) using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), and optional agent limits. For example:
 
 ```json
 {"model":{"provider":"ollama","baseUrl":"http://localhost:11434","model":"your-local-model"},"authorization":{"mode":"require-approval"},"tools":[]}

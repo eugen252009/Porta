@@ -15,6 +15,6 @@ export * from "./agent.js";
 export * from "./authorization-mocks.js";
 export * from "./approval-pending.js";
 export * from "./application-gateway.js";
-export * from "./harness-config.js";
-export * from "./harness-application.js";
+export * from "./porta-config.js";
+export * from "./porta-application.js";
 export * from "./terminal.js";

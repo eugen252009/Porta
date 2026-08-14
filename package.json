@@ -1,5 +1,6 @@
 {
-  "name": "generic-agent-harness",
+  "name": "porta",
+  "description": "Porta is a modular, provider-neutral agent harness for models, tools, runtimes, sandboxes, approvals, and frontends.",
   "private": true,
   "type": "module",
   "scripts": {
@@ -7,7 +8,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "harness": "npm run build && node dist/src/main.js"
+    "porta": "npm run build && node dist/src/main.js",
+    "harness": "npm run porta"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

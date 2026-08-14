@@ -13,7 +13,7 @@ export interface McpToolResult { content: readonly JsonValue[]; structuredConten
 export type McpConnectionFactory = (config: McpStdioConfig) => McpConnection;
 
 const defaultConnectionFactory: McpConnectionFactory = (config) => {
-  const client = new Client({ name: "generic-agent-harness", version: "1" }, { capabilities: {} });
+  const client = new Client({ name: "porta", version: "1" }, { capabilities: {} });
   const transport = new StdioClientTransport({ command: config.command, args: [...(config.args ?? [])], cwd: config.cwd, env: config.env, stderr: "pipe" });
   return { connect: () => client.connect(transport), listTools: async (cursor, signal) => { const result = await client.listTools(cursor ? { cursor } : undefined, signal ? { signal } : undefined); return { tools: result.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema as JsonValue, outputSchema: tool.outputSchema as JsonValue | undefined })), nextCursor: result.nextCursor }; }, callTool: async (name, input, signal, timeout) => { const result = await client.callTool({ name, arguments: input as Record<string, unknown> }, undefined, { signal, timeout }); return { content: result.content as JsonValue[], structuredContent: result.structuredContent as JsonValue | undefined, isError: typeof result.isError === "boolean" ? result.isError : undefined }; }, close: () => client.close() };
 };
