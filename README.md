@@ -8,15 +8,17 @@ The initial foundation is headless. It includes runtime-validated contracts, sid
 
 Plugin activation follows `validate -> qualify -> resolve -> plan -> activate`. Manifests are validated and planned from immutable serializable snapshots before plugin methods are called. Independent plugins are ordered lexically by ID; dependencies always precede dependents.
 
-The first production model adapter is optional Ollama support in `src/adapters/model-ollama.ts`. Construct it with validated `{ baseUrl, model, timeoutMs? }` configuration. It uses Ollama's native `/api/chat` streaming endpoint and `/api/tags` health check, currently exposing only text and streaming capabilities. Tool calling, vision, structured output, embeddings, model management, and automatic model installation are not implemented.
+The first production model adapter is optional Ollama support in `src/adapters/model-ollama.ts`. Construct it with validated `{ baseUrl, model, timeoutMs? }` configuration. It uses Ollama's native `/api/chat` streaming endpoint and `/api/tags` health check, exposing `model.text`, `model.streaming`, and — for models with native tool calling (`supports_tools`, detected at runtime) — `model.tools`. Vision, structured output, embeddings, model management, and automatic model installation are not implemented.
 
-The live smoke test is opt-in with `RUN_OLLAMA_INTEGRATION_TESTS=1`, `OLLAMA_BASE_URL`, and `OLLAMA_MODEL`; it never downloads models.
+A second bundled adapter, `src/adapters/model-openai-compatible.ts`, targets any OpenAI-compatible `/v1/chat/completions` server such as a local llama.cpp `llama-server`. Select it with `model.provider: "openai-compatible"` or `PORTA_MODEL_PROVIDER=openai-compatible` plus `PORTA_MODEL_BASE_URL` (default `http://127.0.0.1:8080`) and `PORTA_MODEL`. It streams SSE, accumulates fragmented `tool_calls` deltas into canonical calls, ignores non-canonical reasoning fields, supports an optional `apiKey` bearer token, and health-checks `/v1/models` by model id or alias. Both adapters expose the same capability-gated `model.tools` surface.
+
+Live smoke tests are opt-in: `RUN_OLLAMA_INTEGRATION_TESTS=1` with `OLLAMA_BASE_URL`/`OLLAMA_MODEL`, or `RUN_OPENAI_COMPATIBLE_INTEGRATION_TESTS=1` with `PORTA_MODEL_BASE_URL`/`PORTA_MODEL`. They never download models.
 
 Provider health is generic and diagnostic: `unreachable`, `resource-unavailable`, `invalid-response`, `provider-error`, and `timeout` are available as optional health reasons. Static plugin qualification does not perform health checks or network I/O.
 
 Runtime execution is modeled as a `RuntimeExecution` lifecycle object rather than a one-shot result. It exposes ordered runtime events, a result, cancellation, and optional stdin. `RuntimeHost` owns execution mechanics; `SandboxProvider` owns enforcement capabilities and session cleanup. `RuntimeCoordinator` rejects unsupported denied guarantees before creating either resource, so policy enforcement fails closed. The semantic policy dimensions are filesystem data access, network access, and additional code loading, each with `allow`, `deny`, or `best-effort` access and explicit sandbox enforcement levels. The initial authorized source/artifact is not additional code; `codeLoading` governs loading executable code beyond it. Thus `filesystem: deny` and `codeLoading: allow` are independent, while `codeLoading: deny` expresses the stronger no-additional-code guarantee.
 
-`MockRuntime` and `MockSandbox` provide deterministic, headless qualification fixtures only. No concrete runtime, subprocess, network, or OS sandbox is included.
+`MockRuntime` and `MockSandbox` provide deterministic, headless qualification fixtures. Concrete adapters are bundled: `HostProcessRuntime` with the host-process sandbox (best-effort enforcement, reported honestly), `DenoRuntime` for Deno subprocess execution, and the Linux-only `BubblewrapSandbox` for true isolation. The composition root selects Bubblewrap when available and safely falls back to the host backend only when the policy permits it.
 
 Tools use provider-scoped canonical identities such as `provider-a/echo`; display names are not routing identities. `ToolDescriptor.inputSchema`, invocation input, and results are serializable `JsonValue` values. Providers own validation of tool-specific arguments, while the generic router validates envelopes, resolves identity, normalizes malformed results, and does not retry. Tool discovery is runtime behavior and remains separate from side-effect-free plugin preflight.
 
@@ -52,11 +54,17 @@ Optional real-model qualification runs only when explicitly requested:
 OLLAMA_MODEL="your-configured-model" npm run qualify:live
 ```
 
-It uses three fresh temporary local Git fixtures (localized bug, cross-file discovery, and large diagnostic artifact), normal Porta composition, bounded budgets, and writes JSON reports under `.tmp/porta-qualification/`. Compaction is enabled in the live configuration; dedicated persisted-resume qualification remains deferred. It is not part of the default test suite and requires no remote repository or network Git.
+or against a local OpenAI-compatible server such as llama.cpp:
+
+```bash
+PORTA_MODEL_PROVIDER=openai-compatible PORTA_MODEL_BASE_URL=http://127.0.0.1:8080 PORTA_MODEL=your-model npm run qualify:live
+```
+
+It uses three fresh temporary local Git fixtures (localized bug, cross-file discovery, and large diagnostic artifact), normal Porta composition, bounded budgets, and writes JSON reports under `.tmp/porta-qualification/`. Compaction is enabled in the live configuration; dedicated persisted-resume qualification remains deferred. It is not part of the default test suite and requires no remote repository or network Git. Budgets are overridable for slower local models via `PORTA_QUALIFICATION_MAX_TURNS`, `PORTA_QUALIFICATION_MAX_TOOL_CALLS`, `PORTA_QUALIFICATION_MAX_EXECUTIONS`, `PORTA_QUALIFICATION_MAX_MUTATIONS`, and `PORTA_QUALIFICATION_MAX_DURATION_MS`.
 
 ## Local terminal application
 
-Start Porta with `npm run porta`. The legacy `npm run harness` command remains an alias. It requires `OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`. Alternatively set `PORTA_CONFIG` to a JSON file (the deprecated `HARNESS_CONFIG` variable remains a fallback) using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), optional agent limits, and `conversation.maxTurns` for deterministic context budgeting. For example:
+Start Porta with `npm run porta`. The legacy `npm run harness` command remains an alias. The default provider is Ollama (`OLLAMA_MODEL`; `OLLAMA_BASE_URL` defaults to `http://localhost:11434`); set `PORTA_MODEL_PROVIDER=openai-compatible` with `PORTA_MODEL` and optional `PORTA_MODEL_BASE_URL` (default `http://127.0.0.1:8080`) to use a local OpenAI-compatible server instead. Alternatively set `PORTA_CONFIG` to a JSON file (the deprecated `HARNESS_CONFIG` variable remains a fallback) using the `model`, optional `tools` (MCP stdio), `authorization.mode` (`require-approval` or `allow-all`), optional agent limits, and `conversation.maxTurns` for deterministic context budgeting. For example:
 
 ```json
 {"model":{"provider":"ollama","baseUrl":"http://localhost:11434","model":"your-local-model"},"authorization":{"mode":"require-approval"},"conversation":{"maxTurns":32},"tools":[]}
