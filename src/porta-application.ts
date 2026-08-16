@@ -2,6 +2,7 @@ import { MCPToolProvider } from "./adapters/tool-mcp.js";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { OllamaModelProvider } from "./adapters/model-ollama.js";
+import { OpenAICompatibleModelProvider } from "./adapters/model-openai-compatible.js";
 import { ConversationContextOptions, InteractiveApprovalGateway } from "./application-gateway.js";
 import { ConversationCompactor, ModelConversationCompactor } from "./compaction.js";
 import { AllowAllToolAuthorizationPolicy, StaticToolAuthorizationPolicy } from "./authorization-mocks.js";
@@ -43,7 +44,7 @@ export interface PortaApplication {
 export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; taskStore?: TaskStore; artifactStore?: ArtifactStore; gitBackend?: GitBackend; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
-  const model = factories.model?.(config.model) ?? new OllamaModelProvider(config.model);
+  const model = factories.model?.(config.model) ?? (config.model.provider === "openai-compatible" ? new OpenAICompatibleModelProvider(config.model) : new OllamaModelProvider(config.model));
   const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
   const persistence: SqlitePersistence | undefined = config.persistence?.enabled ? await openSqlitePersistence(resolve(filesystemRoot ?? process.cwd(), config.persistence.path), config.conversation, config.persistence.maxArtifactBytes) : undefined;
   const mcpProviders = config.tools.map((tool) => factories.mcp?.({ providerId: tool.id, ...tool.transport }) ?? new MCPToolProvider({ providerId: tool.id, ...tool.transport }));
@@ -67,7 +68,7 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
     return new ExecutionToolProvider(runtime, sandbox, { workspaceRoot: filesystemRoot, allowedCommands: executionConfig.allowedCommands, defaultTimeoutMs: executionConfig.defaultTimeoutMs, maxStdoutBytes: executionConfig.maxStdoutBytes, maxStderrBytes: executionConfig.maxStderrBytes, maxArtifactBytes: config.persistence?.maxArtifactBytes, artifactStore: artifacts, policy: { filesystem: executionConfig.filesystem, network: executionConfig.network, codeLoading: executionConfig.codeLoading }, environment: executionConfig.environment, allowedEnvironmentKeys: executionConfig.allowedEnvironmentKeys });
   })() : undefined;
   const registrations: readonly { id: string; provider: ToolProvider }[] = [...mcpProviders.map((provider) => ({ id: provider.providerId, provider })), ...(filesystem ? [{ id: "filesystem", provider: filesystem as ToolProvider }] : []), ...(execution ? [{ id: "execution", provider: execution as ToolProvider }] : []), ...(git ? [{ id: "git", provider: git as ToolProvider }] : []), { id: "artifact", provider: new ArtifactToolProvider(artifacts, artifactEngine, config.persistence?.maxArtifactContextBytes) }, { id: "scratchpad", provider: new ScratchpadToolProvider(scratchpad, scratchpadEngine) }, { id: "task", provider: new TaskToolProvider(tasks) }];
-  const modelManifest = { schemaVersion: 1 as const, id: "model.ollama", version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
+  const modelManifest = { schemaVersion: 1 as const, id: `model.${config.model.provider}`, version: "1", provides: [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }], requires: [] };
   const manifests = [modelManifest, ...registrations.map((registration) => ({ schemaVersion: 1 as const, id: `tools.${registration.id}`, version: "1", provides: [{ id: "tools.discovery", version: "1" }, { id: "tools.invoke", version: "1" }], requires: [] }))];
   const plan = planPlugins(manifests);
   if (plan.status !== "ready") { persistence?.close(); throw new HarnessFailure({ code: "PLUGIN_INVALID", message: "Porta plugin preflight failed.", retryable: false, details: plan.diagnostics }); }

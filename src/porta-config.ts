@@ -4,7 +4,7 @@ import { mcpStdioConfigSchema } from "./adapters/tool-mcp.js";
 
 const toolConfigSchema = z.object({ provider: z.literal("mcp"), id: z.string().min(1), transport: mcpStdioConfigSchema.omit({ providerId: true }) });
 export const portaConfigSchema = z.object({
-  model: z.object({ provider: z.literal("ollama"), baseUrl: z.string().url(), model: z.string().min(1), timeoutMs: z.number().int().positive().optional() }),
+  model: z.object({ provider: z.enum(["ollama", "openai-compatible"]).default("ollama"), baseUrl: z.string().url(), model: z.string().min(1), timeoutMs: z.number().int().positive().optional(), apiKey: z.string().min(1).optional() }),
   tools: z.array(toolConfigSchema).default([]),
   authorization: z.object({ mode: z.enum(["allow-all", "require-approval"]) }).default({ mode: "require-approval" }),
   agent: z.object({ maxSteps: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional() }).default({}),
@@ -28,9 +28,12 @@ export async function loadPortaConfig(path = process.env.PORTA_CONFIG ?? process
   let file: Record<string, unknown> = {};
   if (path) file = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
   const model = (file.model ?? {}) as Record<string, unknown>;
+  const provider = model.provider === "openai-compatible" ? "openai-compatible" : model.provider === "ollama" ? "ollama" : process.env.PORTA_MODEL_PROVIDER === "openai-compatible" ? "openai-compatible" : "ollama";
+  const baseUrl = model.baseUrl ?? (provider === "ollama" ? process.env.OLLAMA_BASE_URL : process.env.PORTA_MODEL_BASE_URL) ?? (provider === "ollama" ? "http://localhost:11434" : "http://127.0.0.1:8080");
+  const modelName = model.model ?? (provider === "ollama" ? process.env.OLLAMA_MODEL : process.env.PORTA_MODEL);
   const value = {
     ...file,
-    model: { provider: "ollama", baseUrl: model.baseUrl ?? process.env.OLLAMA_BASE_URL ?? "http://localhost:11434", model: model.model ?? process.env.OLLAMA_MODEL, ...(model.timeoutMs !== undefined ? { timeoutMs: model.timeoutMs } : {}) },
+    model: { provider, baseUrl, model: modelName, ...(model.timeoutMs !== undefined ? { timeoutMs: model.timeoutMs } : {}), ...(model.apiKey !== undefined ? { apiKey: model.apiKey } : {}) },
   };
   return parsePortaConfig(value);
 }
