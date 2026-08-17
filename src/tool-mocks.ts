@@ -14,12 +14,14 @@ export class MockToolProvider implements ToolProvider {
     descriptors.push({ id: "add", name: "add", version: "1", inputSchema: toolInputSchemas.add }, { id: "fail", name: "fail", version: "1", inputSchema: toolInputSchemas.fail }, { id: "slow", name: "slow", version: "1", inputSchema: toolInputSchemas.slow });
     return descriptors;
   }
+  private resolveId(canonicalToolId: string): string { const slash = canonicalToolId.lastIndexOf("/"); return slash === -1 ? canonicalToolId : canonicalToolId.slice(slash + 1); }
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
     this.calls.push(request.toolId);
-    if (request.toolId === "echo") { const parsed = echoSchema.safeParse(request.input); return parsed.success ? { ok: true, output: parsed.data.value as never } : { ok: false, error: failure("VALIDATION_FAILED", "Echo arguments are invalid.").error }; }
-    if (request.toolId === "add") { const parsed = addSchema.safeParse(request.input); return parsed.success ? { ok: true, output: parsed.data.left + parsed.data.right } : { ok: false, error: failure("VALIDATION_FAILED", "Add arguments are invalid.").error }; }
-    if (request.toolId === "fail") return { ok: false, error: failure("TOOL_FAILED", `Mock tool '${this.providerName}' failed.`).error };
-    if (request.toolId === "slow") return this.waitForTermination(context);
+    const id = this.resolveId(request.toolId);
+    if (id === "echo") { const parsed = echoSchema.safeParse(request.input); return parsed.success ? { ok: true, output: parsed.data.value as never } : { ok: false, error: failure("VALIDATION_FAILED", "Echo arguments are invalid.").error }; }
+    if (id === "add") { const parsed = addSchema.safeParse(request.input); return parsed.success ? { ok: true, output: parsed.data.left + parsed.data.right } : { ok: false, error: failure("VALIDATION_FAILED", "Add arguments are invalid.").error }; }
+    if (id === "fail") return { ok: false, error: failure("TOOL_FAILED", `Mock tool '${this.providerName}' failed.`).error };
+    if (id === "slow") return this.waitForTermination(context);
     return { ok: false, error: failure("CAPABILITY_UNAVAILABLE", `Tool '${request.toolId}' is unavailable.`).error };
   }
   private waitForTermination(context: ToolContext): Promise<ToolResult> { return new Promise((resolve) => { const finish = (result: ToolResult) => { context.signal.removeEventListener("abort", onAbort); if (timer) clearTimeout(timer); resolve(result); }; const onAbort = () => finish({ ok: false, error: failure("CANCELLED", "Tool invocation was cancelled.").error }); const remaining = context.deadline === undefined ? undefined : context.deadline - Date.now(); const timer = remaining === undefined ? undefined : setTimeout(() => finish({ ok: false, error: failure("TIMEOUT", "Tool invocation exceeded its deadline.", true).error }), Math.max(0, remaining)); context.signal.addEventListener("abort", onAbort, { once: true }); }); }

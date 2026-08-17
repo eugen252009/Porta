@@ -8,6 +8,7 @@ import { PendingApprovalProvider } from "../src/approval-pending.js";
 import { InteractiveApprovalGateway } from "../src/application-gateway.js";
 import { StaticToolAuthorizationPolicy } from "../src/authorization-mocks.js";
 import { MCPToolProvider } from "../src/adapters/tool-mcp.js";
+import { OpenAICompatibleModelProvider } from "../src/adapters/model-openai-compatible.js";
 import { ToolContext, kernelEventSchema } from "../src/index.js";
 import { MockToolProvider } from "../src/tool-mocks.js";
 import { ToolRouter } from "../src/tools.js";
@@ -44,6 +45,32 @@ describe("interactive approval gateway", () => {
 
   it("accepts exactly one of concurrent conflicting resolutions", async () => {
     const pending = new PendingApprovalProvider(); const request = { approvalId: "approval-race", toolCallId: "call", invocation: { schemaVersion: 1 as const, requestId: "call", toolId: "provider/echo", input: {} }, context: context() }; const waiting = pending.approve(request); const outcomes = await Promise.allSettled([Promise.resolve().then(() => pending.resolve(request.approvalId, { decision: "approve" })), Promise.resolve().then(() => pending.resolve(request.approvalId, { decision: "deny" }))]); expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1); expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1); expect((await waiting).approved).toBe(true); expect(pending.pendingCount).toBe(0);
+  });
+
+  it("routes adapter-mapped tool calls by canonical identity when local ids collide", async () => {
+    const first = new MockToolProvider("provider-a"); const second = new MockToolProvider("server-b");
+    const tools = new ToolRouter(); await tools.register("provider-a", first, context()); await tools.register("server-b", second, context());
+    const target = tools.listTools().findIndex((tool) => tool.canonicalId === "server-b/echo");
+    const sse = (payload: string) => `data: ${payload}\n\n`;
+    const turns: string[][] = [
+      [sse(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"harness_tool_${target}","arguments":"{\\"value\\":\\"scoped\\"}"}}]}}]}`), "data: [DONE]\n\n"],
+      [sse('{"choices":[{"delta":{"content":"routed"}}]}'), "data: [DONE]\n\n"],
+    ];
+    let turn = 0;
+    const fetchLike = async (_input: string | URL, init?: RequestInit): Promise<Response> => {
+      const body = new ReadableStream<Uint8Array>({ start(controller) { const encoder = new TextEncoder(); for (const chunk of turns[turn++ % turns.length]!) controller.enqueue(encoder.encode(chunk)); controller.close(); } });
+      return { ok: true, status: 200, body, json: async () => ({}) } as Response;
+    };
+    const model = new OpenAICompatibleModelProvider({ baseUrl: "http://model.test/v1", model: "local-model" }, fetchLike);
+    const gateway = new InteractiveApprovalGateway(model, tools, new PendingApprovalProvider(), new StaticToolAuthorizationPolicy("allow"));
+    const session = (await collect(gateway.execute({ type: "CreateSession" })))[0] as { sessionId: string };
+    const events = await collect(gateway.execute({ type: "SubmitInput", sessionId: session.sessionId, input: "route it" }));
+    const completed = events.find((event) => event.type === "ToolCompleted") as { toolId: string; result: { output?: string; error?: { code: string } } } | undefined;
+    expect(completed?.toolId).toBe("server-b/echo");
+    expect(completed?.result).toMatchObject({ output: "scoped" });
+    expect(completed?.result?.error).toBeUndefined();
+    expect(second.calls).toEqual(["echo"]);
+    expect(first.calls).toEqual([]);
   });
 
   it("qualifies real MCP approve and deny paths", async () => {

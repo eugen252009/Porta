@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AgentEvent, AgentExecution, AgentOrchestrator } from "./agent.js";
 import { PendingApprovalEvent, PendingApprovalProvider } from "./approval-pending.js";
-import { ApplicationGateway, CommandContext, ConversationStore, ConversationSnapshot, KernelCommand, KernelEvent, ModelContext, ModelProvider, ToolAuthorizationPolicy, failure, HarnessFailure, resolveApprovalCommandSchema } from "./contracts.js";
+import { ApplicationGateway, CommandContext, ConversationStore, ConversationSnapshot, KernelCommand, KernelEvent, ModelContext, ModelProvider, ToolAuthorizationPolicy, ToolDescriptor, failure, HarnessFailure, resolveApprovalCommandSchema } from "./contracts.js";
 import { MemoryConversationStore, sessionFromBase } from "./conversation.js";
 import { ConversationCompactor, DeterministicConversationCompactor } from "./compaction.js";
 import { ScratchpadStore } from "./scratchpad.js";
@@ -41,7 +41,7 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
     try { prepared = await this.prepareContext(command.sessionId, modelContext); }
     catch (error) { yield { type: "Error", error: normalizeError(error) }; return; }
     const approvalEvents = this.pending.subscribe();
-    const execution = new AgentOrchestrator(this.model, this.tools, this.limits, { policy: this.policy, approvalProvider: this.pending }).create(command.input, modelContext, this.tools.listTools(), prepared.history, prepared.control);
+    const execution = new AgentOrchestrator(this.model, this.tools, this.limits, { policy: this.policy, approvalProvider: this.pending }).create(command.input, modelContext, modelFacingDescriptors(this.tools), prepared.history, prepared.control);
     const executionId = execution.id;
     this.active.set(command.sessionId, execution);
     yield { type: "ExecutionStarted", executionId };
@@ -79,6 +79,8 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
   }
   private async taskControl(sessionId: string): Promise<readonly import("./contracts.js").ModelControlMessage[]> { const task = await this.contextOptions.taskStore?.get(sessionId); return task ? [{ role: "system", content: taskSnapshot(task) }] : []; }
 }
+/** Models address tools by their provider-scoped canonical identity: the router routes by that identity and bare local ids may collide across providers. */
+function modelFacingDescriptors(router: ToolRouter): readonly ToolDescriptor[] { return router.listTools().map((tool) => ({ ...tool, id: tool.canonicalId })); }
 function isCancellation(error: unknown, context: ModelContext): boolean { return context.signal.aborted || (error instanceof HarnessFailure && (error.error.code === "CANCELLED" || error.error.code === "TIMEOUT")); }
 function normalizeError(error: unknown): import("./contracts.js").HarnessError { if (error instanceof HarnessFailure) return error.error; return failure("MODEL_FAILED", error instanceof Error ? error.message : "Conversation context preparation failed.").error; }
 
