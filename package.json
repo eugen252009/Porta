@@ -10,15 +10,20 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "porta": "npm run build && node dist/src/main.js",
     "harness": "npm run porta",
+    "porta:tui": "npm run build && node dist/src/main-tui.js",
+    "porta:web": "npm run build && node dist/src/main-web.js",
     "qualify:live": "npm run build && node dist/tests/qualification/cli.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ajv": "^8.20.0",
+    "ink": "^7.1.1",
+    "react": "^19.2.8",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/react": "^19.2.18",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

@@ -71,3 +71,7 @@ Start Porta with `npm run porta`. The legacy `npm run harness` command remains a
 ```
 
 The shell streams canonical application events, accepts `y`/`yes` for approval, denies other approval input (including EOF), accepts `/cancel`, and treats EOF as graceful shutdown. A built invocation is `npm run build && node dist/src/main.js`.
+
+### Local browser application
+
+Start the browser UI with `PORTA_CONFIG=porta-tui.json npm run porta:web`, then open `http://127.0.0.1:4173`. The server binds to localhost only, streams canonical gateway events over newline-delimited HTTP responses, and keeps model and filesystem access on the server. Set `PORTA_WEB_PORT` to use another local port. Filesystem paths are relative to the configured `filesystem.root`; the bundled `porta-tui.json` uses the current working directory.

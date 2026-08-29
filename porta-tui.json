@@ -1,0 +1,39 @@
+{
+  "model": {
+    "provider": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:8080",
+    "model": "Qwen3.6-35B-A3B"
+  },
+  "authorization": {
+    "mode": "allow-all"
+  },
+  "agent": {
+    "maxSteps": 16
+  },
+  "conversation": {
+    "maxTurns": 8
+  },
+  "filesystem": {
+    "root": ".",
+    "mutation": {
+      "enabled": true
+    }
+  },
+  "execution": {
+    "enabled": true,
+    "allowedCommands": [
+      "/home/eugen/.bun/bin/node",
+      "node"
+    ],
+    "maxStdoutBytes": 256,
+    "maxStderrBytes": 256,
+    "sandbox": {
+      "preference": [
+        "sandbox.host-process"
+      ]
+    }
+  },
+  "git": {
+    "enabled": true
+  }
+}

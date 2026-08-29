@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Porta</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div><strong>Porta</strong><span id="model" class="muted"></span></div>
+        <button id="new-session" class="quiet" type="button">New session</button>
+      </header>
+      <section id="messages" class="messages" aria-live="polite"></section>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="1" placeholder="Ask Porta to inspect your workspace..." autofocus></textarea>
+        <div class="composer-footer"><span id="status" class="muted">Ready</span><button id="send" type="submit">Send</button></div>
+      </form>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
