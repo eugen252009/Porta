@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { OllamaModelProvider } from "./adapters/model-ollama.js";
 import { OpenAICompatibleModelProvider } from "./adapters/model-openai-compatible.js";
+import { OpenAICodexModelProvider } from "./adapters/model-openai-codex.js";
 import { ConversationContextOptions, InteractiveApprovalGateway } from "./application-gateway.js";
 import { ConversationCompactor, ModelConversationCompactor } from "./compaction.js";
 import { AllowAllToolAuthorizationPolicy, StaticToolAuthorizationPolicy } from "./authorization-mocks.js";
@@ -28,6 +29,8 @@ import { openSqlitePersistence, SqlitePersistence } from "./persistence-sqlite.j
 import { ArtifactSearchSource, ArtifactStore, ArtifactToolProvider, MemoryArtifactStore } from "./artifact.js";
 import { ToolRouter } from "./tools.js";
 
+import { ModelPicker } from "./model-picker.js";
+
 export interface PortaApplication {
   readonly gateway: InteractiveApprovalGateway;
   readonly pendingApprovals: PendingApprovalProvider;
@@ -44,7 +47,13 @@ export interface PortaApplication {
 export interface PortaFactories { model?: (config: PortaConfig["model"]) => ModelProvider; taskStore?: TaskStore; artifactStore?: ArtifactStore; gitBackend?: GitBackend; mcp?: (config: import("./adapters/tool-mcp.js").McpStdioConfig) => MCPToolProvider; conversations?: ConversationStore; scratchpad?: ScratchpadStore; contentReducer?: ReducerContract; compactor?: ConversationCompactor; mutationEngine?: MutationEngine; executionRuntime?: RuntimeHost; executionSandbox?: SandboxProvider; executionSandboxes?: readonly SandboxProvider[] }
 
 export async function createPortaApplication(config: PortaConfig, factories: PortaFactories = {}): Promise<PortaApplication> {
-  const model = factories.model?.(config.model) ?? (config.model.provider === "openai-compatible" ? new OpenAICompatibleModelProvider(config.model) : new OllamaModelProvider(config.model));
+  const defaultProvider = (() => {
+    if (config.model.provider === "openai-codex") return new OpenAICodexModelProvider(config.model);
+    if (config.model.provider === "openai-compatible") return new OpenAICompatibleModelProvider(config.model);
+    return new OllamaModelProvider(config.model);
+  })();
+  const picker = new ModelPicker({ [config.model.provider]: defaultProvider });
+  const model = factories.model?.(config.model) ?? (await picker.selectProvider(config.model.provider));
   const filesystemRoot = config.filesystem ? realpathSync(resolve(config.filesystem.root)) : undefined;
   const persistence: SqlitePersistence | undefined = config.persistence?.enabled ? await openSqlitePersistence(resolve(filesystemRoot ?? process.cwd(), config.persistence.path), config.conversation, config.persistence.maxArtifactBytes) : undefined;
   const mcpProviders = config.tools.map((tool) => factories.mcp?.({ providerId: tool.id, ...tool.transport }) ?? new MCPToolProvider({ providerId: tool.id, ...tool.transport }));

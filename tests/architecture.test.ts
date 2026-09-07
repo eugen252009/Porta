@@ -13,11 +13,11 @@ describe("architecture boundaries", () => {
   });
   it("keeps Ollama imports confined to its adapter", () => {
     const sourceFiles = files(join(process.cwd(), "src"));
-    for (const file of sourceFiles.filter((file) => !file.includes("model-ollama") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/ollama/i);
+    for (const file of sourceFiles.filter((file) => !file.includes("model-ollama") && !file.includes("model-picker") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/ollama/i);
   });
   it("keeps OpenAI-compatible knowledge confined to its adapter", () => {
     const sourceFiles = files(join(process.cwd(), "src"));
-    for (const file of sourceFiles.filter((file) => !file.includes("model-openai-compatible") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/openai/i);
+    for (const file of sourceFiles.filter((file) => !file.includes("model-openai-compatible") && !file.includes("model-openai-codex") && !file.includes("codex-auth") && !file.includes("model-picker") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/openai/i);
   });
   it("keeps runtime and sandbox ports free of concrete adapter imports", () => { for (const file of ["src/contracts.ts", "src/runtime.ts"]) expect(readFileSync(join(process.cwd(), file), "utf8")).not.toMatch(/mock-runtime|mock-sandbox|deno|node-runtime|bun|bubblewrap|container/i); });
   it("keeps Deno knowledge confined to Deno adapter modules", () => { for (const file of files(join(process.cwd(), "src")).filter((file) => !file.includes("runtime-deno") && !file.includes("sandbox-deno-permissions") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/deno|deno\.permissions/i); });

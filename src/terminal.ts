@@ -27,6 +27,39 @@ export class TerminalRenderer implements Renderer {
     else if (event.type === "Error") this.output.write(`\n[error] ${event.error.message}\n`);
   }
   write(text: string): void { this.output.write(text); }
+  renderStartup(model: string, tools: readonly string[]): void {
+    const maxDisplayedTools = 64;
+    const displayedTools = tools.slice(0, maxDisplayedTools).map((tool) => {
+      const truncated = tool.length > 80 ? tool.slice(0, 80) + "..." : tool;
+      return JSON.stringify(truncated);
+    });
+    const extraCount = tools.length > maxDisplayedTools ? tools.length - maxDisplayedTools : 0;
+    const toolsSummary = displayedTools.join(", ") + (extraCount > 0 ? `, ... ${extraCount} more tools` : "");
+    const escapedModel = JSON.stringify(model);
+
+    const hasFilesystemWrite = tools.some((t) => t.startsWith("filesystem/write") || t.startsWith("filesystem/patch"));
+    const hasFilesystemRead = tools.some((t) => t.startsWith("filesystem/"));
+    let fsStatus = "disabled";
+    if (hasFilesystemWrite) {
+      fsStatus = "read/write";
+    } else if (hasFilesystemRead) {
+      fsStatus = "read-only";
+    }
+
+    const hasExecution = tools.some((t) => t.startsWith("execution/"));
+    let execStatus = "disabled";
+    if (hasExecution) {
+      execStatus = "enabled (subject to allowlist, approvals, and sandbox policy)";
+    }
+
+    let message = `Model: ${escapedModel}\nTools: ${tools.length}\n[${toolsSummary}]\nFilesystem: ${fsStatus}\n`;
+    if (fsStatus === "disabled") {
+      message += "To enable file creation and modification, configure filesystem.root and filesystem.mutation.enabled in PORTA_CONFIG.\n";
+    }
+    message += `Command execution: ${execStatus}\n\n`;
+
+    this.output.write(message);
+  }
 }
 
 export async function runTerminal(gateway: ApplicationGateway, input: TerminalInputAdapter, renderer: TerminalRenderer, output: Writable, resumeSessionId?: string): Promise<void> {
