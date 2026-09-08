@@ -13,6 +13,7 @@ export class TerminalInputAdapter implements InputAdapter {
 
 export class TerminalRenderer implements Renderer {
   constructor(private readonly output: Writable) {}
+  /** Allowlisted startup metadata only: never serialize configuration, credentials, or tool inputs. */
   async render(presentation: PresentationEvent): Promise<void> { this.renderEvent(presentation.event); }
   renderEvent(event: KernelEvent): void {
     if (event.type === "OutputDelta") this.output.write(event.text);

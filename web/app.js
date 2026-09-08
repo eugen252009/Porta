@@ -2,6 +2,7 @@ const messages = document.querySelector("#messages");
 const input = document.querySelector("#input");
 const form = document.querySelector("#composer");
 const send = document.querySelector("#send");
+const newSession = document.querySelector("#new-session");
 const status = document.querySelector("#status");
 const model = document.querySelector("#model");
 let sessionId;
@@ -37,9 +38,22 @@ async function resolveApproval(approvalId, decision, box) {
   box.remove();
 }
 async function createSession(session) {
-  const response = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(session ? { sessionId: session } : {}) });
-  const result = await response.json(); if (!response.ok) throw new Error(result.error?.message ?? result.error ?? "Could not create session.");
+  let response = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(session ? { sessionId: session } : {}) });
+  let result = await response.json();
+  // A saved session can be closed or belong to an older server instance.
+  // Recover by creating a fresh session instead of leaving sessionId undefined.
+  if (!response.ok && session) {
+    localStorage.removeItem("porta-session");
+    response = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    result = await response.json();
+  }
+  if (!response.ok) throw new Error(result.error?.message ?? result.error ?? "Could not create session.");
   sessionId = result.sessionId; localStorage.setItem("porta-session", sessionId); return sessionId;
+}
+function resizeInput() {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+  input.scrollTop = input.scrollHeight;
 }
 async function submit(text) {
   if (running) return; running = true; send.disabled = true; status.textContent = "Working…";
@@ -62,7 +76,15 @@ function handleEvent(event, assistant) {
   else if (event.type === "Error") addSystem(event.error.message);
   messages.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
-form.addEventListener("submit", (event) => { event.preventDefault(); const text = input.value.trim(); if (text) { input.value = ""; submit(text); } });
-input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 180)}px`; });
+form.addEventListener("submit", (event) => { event.preventDefault(); const text = input.value.trim(); if (text && sessionId) { input.value = ""; resizeInput(); submit(text); } });
+newSession.addEventListener("click", async () => {
+  if (running) return;
+  localStorage.removeItem("porta-session");
+  sessionId = undefined;
+  messages.replaceChildren();
+  try { await createSession(); status.textContent = "Ready"; input.focus(); }
+  catch (error) { addSystem(error instanceof Error ? error.message : "Could not create session."); }
+});
+input.addEventListener("input", resizeInput);
 input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
 (async () => { try { await createSession(localStorage.getItem("porta-session")); model.textContent = "local session"; } catch (error) { addSystem(error instanceof Error ? error.message : "Could not connect to Porta."); } })();

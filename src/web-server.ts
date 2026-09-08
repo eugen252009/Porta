@@ -74,6 +74,9 @@ async function api(gateway: ApplicationGateway, url: URL, request: IncomingMessa
       for await (const event of gateway.execute({ type: "SubmitInput", sessionId, input: body.input.trim() }, {})) {
         response.write(`${JSON.stringify(event)}\n`);
       }
+      // Keep the session open so the browser can submit follow-up messages and
+      // resume it after a restart when persistence is enabled. Sessions are
+      // closed explicitly through DELETE /api/sessions/:id.
       response.end();
       return;
     }

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, usePaste } from "ink";
 import { KernelEvent, ApplicationGateway } from "./contracts.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -337,6 +337,14 @@ export function PortaTUI({ gateway, sessionId, model, maxSteps = 16 }: PortaTUIP
 
   // ─── Keyboard ────────────────────────────────────────────────────────────
 
+  // Keep paste on Ink's dedicated paste channel. This prevents pasted
+  // newlines from being interpreted as Enter key presses.
+  usePaste(text => {
+    if (!running && !pendingApproval) {
+      setInput(prev => prev + text.replace(/\r\n?/g, "\n"));
+    }
+  });
+
   useInput((inputChar, key) => {
     // Approval handling
     if (pendingApproval) {
@@ -369,9 +377,13 @@ export function PortaTUI({ gateway, sessionId, model, maxSteps = 16 }: PortaTUIP
     // Block all input while execution is running (except Ctrl+C)
     if (running) return true;
 
-    // Submit on Enter
-    if (key.return && input.trim()) {
-      void submit(input.trim());
+    // Shift+Enter inserts a newline; plain Enter submits the complete buffer.
+    if (key.return) {
+      if (key.shift) {
+        setInput(prev => prev + "\n");
+      } else if (input.trim()) {
+        void submit(input.trim());
+      }
       return true;
     }
 

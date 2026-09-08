@@ -1,20 +1,36 @@
 {
   "name": "porta",
+  "version": "0.1.0",
   "description": "Porta is a modular, provider-neutral agent harness for models, tools, runtimes, sandboxes, approvals, and frontends.",
-  "private": true,
   "type": "module",
+  "bin": {
+    "porta": "dist/src/main.js"
+  },
+  "files": [
+    "dist/src",
+    "web",
+    "porta-tui.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test && npm run typecheck",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
     "porta": "npm run build && node dist/src/main.js",
+    "start": "node dist/src/main.js",
     "harness": "npm run porta",
     "porta:tui": "npm run build && node dist/src/main-tui.js",
     "porta:web": "npm run build && node dist/src/main-web.js",
     "qualify:live": "npm run build && node dist/tests/qualification/cli.js"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ajv": "^8.20.0",
     "ink": "^7.1.1",

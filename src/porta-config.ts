@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { mcpStdioConfigSchema } from "./adapters/tool-mcp.js";
+import { openAICodexModelProviderConfigSchema } from "./adapters/model-openai-codex.js";
 
 const toolConfigSchema = z.object({ provider: z.literal("mcp"), id: z.string().min(1), transport: mcpStdioConfigSchema.omit({ providerId: true }) });
 

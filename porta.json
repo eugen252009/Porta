@@ -1,0 +1,25 @@
+{
+  "model": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-sol",
+    "timeoutMs": 120000,
+    "maxResponseBytes": 8388608
+  },
+  "tools": [],
+  "authorization": {
+    "mode": "require-approval"
+  },
+  "agent": {},
+  "conversation": {},
+  "filesystem": {
+    "root": "/home/eugen/projekte/Porta/",
+    "maxExactContextBytes": 65536,
+    "maxReadBytes": 8388608,
+    "maxSummaryChars": 12000,
+    "mutation": {
+      "enabled": false,
+      "maxWriteBytes": 2097152,
+      "maxPatchTargetBytes": 8388608
+    }
+  }
+}
