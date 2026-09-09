@@ -17,6 +17,7 @@ import type { DevelopmentRunner } from "./development-runner.js";
 import type { TargetRegistry } from "./target.js";
 import type { TargetInvocationService } from "./target-invocation.js";
 import type { DevelopmentTaskQualificationService } from "./development-task-qualification.js";
+import type { DevelopmentTaskCreationService } from "./development-task-creation.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
@@ -28,6 +29,7 @@ export interface WebApplication {
   executionTargets?: TargetRegistry;
   targetInvocations?: TargetInvocationService;
   developmentQualification?: DevelopmentTaskQualificationService;
+  developmentTaskCreation?: DevelopmentTaskCreationService;
   providers?: ProviderRegistry;
   conversations?: import("./contracts.js").ConversationStore;
   pendingApprovals?: Pick<import("./approval-pending.js").PendingApprovalProvider, "pendingRequests">;
@@ -125,6 +127,16 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   if (request.method === "GET" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, { identities: application.identity.listAllowed() }); return; }
   if (request.method === "POST" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const body = await readJson(request) as { identity?: string; publicKey?: string; algorithm?: "ed25519"; displayName?: string }; if (!body.identity || !body.publicKey || body.algorithm !== "ed25519" || !body.displayName) { json(response, 400, { error: "Identity, publicKey, algorithm, and displayName are required." }); return; } application.identity.allow({ identity: body.identity, publicKey: body.publicKey, algorithm: "ed25519" }, body.displayName); json(response, 201, { created: true }); return; }
   if ((request.method === "PATCH" || request.method === "DELETE") && url.pathname.startsWith("/api/identity/allowed/")) { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const id = decodeURIComponent(url.pathname.slice("/api/identity/allowed/".length)); if (request.method === "DELETE") application.identity.remove(id); else application.identity.setEnabled(id, Boolean((await readJson(request) as { enabled?: boolean }).enabled)); json(response, 200, { updated: true }); return; }
+  if (request.method === "POST" && url.pathname === "/api/development-tasks") { try {
+    if (!application.developmentTaskCreation) { json(response, 503, { error: "Development task creation is unavailable." }); return; }
+    const body = await readJson(request) as Record<string, unknown>;
+    const permissions = body.permissions as Record<string, unknown> | undefined;
+    const workspace = body.workspace as Record<string, unknown> | undefined;
+    const strings = (value: unknown): readonly string[] | undefined => Array.isArray(value) && value.every((entry) => typeof entry === "string") ? value : undefined;
+    if (typeof body.goal !== "string" || typeof body.developmentTargetId !== "string" || typeof workspace?.id !== "string" || typeof workspace.path !== "string" || !permissions || typeof permissions.mutate !== "boolean" || typeof permissions.commit !== "boolean" || typeof permissions.push !== "boolean" || typeof permissions.deploy !== "boolean") { json(response, 400, { error: "goal, workspace, target, and boolean permissions are required." }); return; }
+    const acceptanceCriteria = strings(body.acceptanceCriteria); if (!acceptanceCriteria) { json(response, 400, { error: "acceptanceCriteria must be an array of strings." }); return; }
+    const task = await application.developmentTaskCreation.create({ goal: body.goal, targetId: body.developmentTargetId, workspaceId: workspace.id, workspacePath: workspace.path, acceptanceCriteria, permissions: { mutate: permissions.mutate, commit: permissions.commit, push: permissions.push, deploy: permissions.deploy }, ...(strings(body.constraints) ? { constraints: strings(body.constraints) } : {}), ...(strings(body.focusedCommands) ? { focusedCommands: strings(body.focusedCommands) } : {}), ...(strings(body.fullCommands) ? { fullCommands: strings(body.fullCommands) } : {}) }); json(response, 201, task);
+  } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Development task could not be created." }); } return; }
   if (request.method === "POST" && url.pathname === "/api/development-qualification") { try { const task = await application.developmentQualification?.create("pc-main"); if (!task) { json(response, 503, { error: "Development qualification is unavailable." }); return; } json(response, 201, task); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Qualification task could not be created." }); } return; }
   if (request.method === "POST" && url.pathname.startsWith("/api/development-qualification/") && url.pathname.endsWith("/run")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/development-qualification/".length, -"/run".length)); try { const task = await application.developmentQualification?.run(sessionId); if (!task) { json(response, 404, { error: "Qualification task was not found." }); return; } json(response, 202, task); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Qualification task could not run." }); } return; }
   if (request.method === "POST" && url.pathname === "/api/execution-invocations") { const body = await readJson(request); if (typeof body?.targetId !== "string" || typeof body.workspaceId !== "string" || typeof body.operation !== "string") { json(response, 400, { error: "targetId, workspaceId, and operation are required." }); return; } try { const evidence = application.targetInvocations?.start({ targetId: body.targetId, workspaceId: body.workspaceId, operation: body.operation as import("./target-transport.js").TargetOperation, input: body.input, ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(typeof body.deadline === "number" ? { deadline: body.deadline } : {}) }); if (!evidence) { json(response, 503, { error: "Target invocation is unavailable." }); return; } json(response, 202, evidence); } catch (error) { json(response, 400, { error: error instanceof Error ? error.message : "Target invocation failed." }); } return; }
