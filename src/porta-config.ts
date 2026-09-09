@@ -45,6 +45,8 @@ const modelConfigSchema = z.preprocess(
 );
 
 const targetConfigSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), name: z.string().min(1), endpoint: z.string().url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol), "Target endpoint must use http or https") }).strict();
+const executionTargetConfigSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), kind: z.string().min(1).default("remote"), transport: z.literal("http").default("http"), endpoint: z.string().url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol), "Execution target endpoint must use http or https"), workspaceId: z.string().min(1).optional() }).strict();
+const executionTargetsConfigSchema = z.array(executionTargetConfigSchema).superRefine((value, context) => { const ids = new Set<string>(); for (const target of value) { if (ids.has(target.id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate execution target id '${target.id}'.` }); ids.add(target.id); } });
 const providerConfigSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), type: z.enum(["ollama", "openai-compatible"]), name: z.string().min(1), endpoint: z.string().url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol)), model: z.string().min(1).optional() }).strict();
 const providerConfigListSchema = z.array(providerConfigSchema).superRefine((value, context) => { const ids = new Set<string>(); for (const provider of value) { if (ids.has(provider.id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate provider id '${provider.id}'.` }); ids.add(provider.id); } });
 const webConfigSchema = z.object({ targets: z.array(targetConfigSchema).default([]), port: z.number().int().positive().default(4173) }).default({ targets: [], port: 4173 }).superRefine((value, context) => { const ids = new Set(["local"]); for (const target of value.targets) { if (ids.has(target.id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate target id '${target.id}'.` }); ids.add(target.id); } });
@@ -60,6 +62,7 @@ export const portaConfigSchema = z.object({
   git: z.object({ enabled: z.boolean().default(false), executable: z.string().min(1).optional(), maxStatusEntries: z.number().int().positive().default(1000), maxDiffBytes: z.number().int().positive().default(262144), maxShowBytes: z.number().int().positive().default(262144), maxLogEntries: z.number().int().positive().max(100).default(20) }).optional(),
   persistence: z.object({ enabled: z.boolean().default(false), driver: z.literal("sqlite").default("sqlite"), path: z.string().min(1).default(".porta/porta.db"), maxArtifactBytes: z.number().int().positive().default(64 * 1024 * 1024), maxArtifactContextBytes: z.number().int().positive().default(64 * 1024) }).optional(),
   web: webConfigSchema.optional(),
+  executionTargets: executionTargetsConfigSchema.default([]).optional(),
   deployment: z.object({ imageRepository: z.string().min(1), registry: z.string().url().or(z.string().regex(/^[^/]+:\\d+$/)), target: z.string().min(1).default("porta-nas") }).strict().optional(),
   providers: providerConfigListSchema.optional(),
 });
