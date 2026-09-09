@@ -47,6 +47,7 @@ export * from "./target.js";
 export * from "./target-transport.js";
 export * from "./target-worker.js";
 export * from "./target-invocation.js";
+export * from "./development-task-qualification.js";
 export * from "./deployment.js";
 export * from "./attention.js";
 export * from "./process-runner.js";
