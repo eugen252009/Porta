@@ -35,7 +35,8 @@ export interface DevelopmentReleaseCapabilities {
   deploy(input: { readonly deploymentId: string; readonly sourceRevision: string; readonly imageReference: string; readonly imageDigest?: string; readonly previousRevision?: string; readonly previousImageReference?: string }): Promise<{ readonly status: "triggered" | "failed"; readonly stdout?: string; readonly stderr?: string; readonly exitCode?: number }>;
   qualify(input: { readonly sessionId: string; readonly taskId: string; readonly deploymentId: string; readonly expectedRevision: string }): Promise<{ readonly ready: boolean; readonly correctRevision: boolean; readonly taskStateAvailable: boolean; readonly observedRevision?: string; readonly message?: string }>;
 }
-export interface DevelopmentRunnerOptions { readonly maxTransitions?: number; readonly now?: () => string; readonly release?: DevelopmentReleaseCapabilities }
+export interface DevelopmentLocalQualification { qualify(input: { readonly sessionId: string; readonly taskId: string; readonly deploymentId: string; readonly expectedRevision: string }): Promise<{ readonly ready: boolean; readonly correctRevision: boolean; readonly taskStateAvailable: boolean; readonly observedRevision?: string; readonly message?: string }> }
+export interface DevelopmentRunnerOptions { readonly maxTransitions?: number; readonly now?: () => string; readonly release?: DevelopmentReleaseCapabilities; readonly localQualification?: DevelopmentLocalQualification }
 
 /**
  * Persistent, phase-oriented workflow coordinator. The driver performs work
@@ -47,10 +48,12 @@ export class DevelopmentRunner {
   private readonly maxTransitions: number;
   private readonly now: () => string;
   private readonly releaseCapabilities?: DevelopmentReleaseCapabilities;
+  private readonly localQualification?: DevelopmentLocalQualification;
   constructor(private readonly tasks: TaskStore, private readonly driver: DevelopmentPhaseDriver, options: DevelopmentRunnerOptions = {}) {
     this.maxTransitions = options.maxTransitions ?? 16;
     this.now = options.now ?? (() => new Date().toISOString());
     this.releaseCapabilities = options.release;
+    this.localQualification = options.localQualification;
   }
 
   async wake(sessionId: string): Promise<Task | undefined> {
@@ -89,10 +92,11 @@ export class DevelopmentRunner {
   }
 
   async recover(sessionId: string): Promise<Task> {
-    if (!this.releaseCapabilities) throw failure("CAPABILITY_UNAVAILABLE", "Release capabilities are not configured.");
+    if (!this.releaseCapabilities && !this.localQualification) throw failure("CAPABILITY_UNAVAILABLE", "No deployment qualification capability is configured.");
     const task = await this.requireTask(sessionId); const state = this.requireState(task); const deployment = state.deployment;
     if (!["deploying", "health_checking"].includes(state.phase) || !deployment || !["prepared", "triggered", "awaiting_recovery"].includes(deployment.status)) return task;
-    const result = await this.releaseCapabilities!.qualify({ sessionId, taskId: task.id, deploymentId: deployment.deploymentId ?? "unknown", expectedRevision: state.commitSha ?? deployment.sourceCommit ?? "" });
+    const qualify = this.releaseCapabilities?.qualify ?? this.localQualification!.qualify;
+    const result = await qualify({ sessionId, taskId: task.id, deploymentId: deployment.deploymentId ?? "unknown", expectedRevision: state.commitSha ?? deployment.sourceCommit ?? "" });
     const now = this.now();
     if (!result.ready || !result.correctRevision || !result.taskStateAvailable) return this.tasks.update(sessionId, task.id, task.version, { type: "set_development", development: { ...state, attention: { reason: "deployment_failed", message: result.message ?? "Post-deployment qualification failed." }, pendingIntervention: { action: "resume", message: result.message ?? "Post-deployment qualification failed.", requestedAt: now }, deployment: { ...deployment, status: "failed", finishedAt: now, failureReason: result.message }, lastEvent: result.message ?? "Post-deployment qualification failed.", updatedAt: now } });
     const updated = await this.tasks.update(sessionId, task.id, task.version, { type: "set_development", development: { ...state, phase: "completed", attention: undefined, pendingIntervention: undefined, deployment: { ...deployment, status: "succeeded", finishedAt: now }, lastEvent: "Replacement instance qualified successfully.", updatedAt: now } });
