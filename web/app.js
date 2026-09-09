@@ -1,3 +1,4 @@
+import { credentialToJSON, loginOptionsForBrowser, registrationOptionsForBrowser } from "./webauthn.js";
 const messages = document.querySelector("#messages");
 const input = document.querySelector("#input");
 const form = document.querySelector("#composer");
@@ -5,86 +6,190 @@ const send = document.querySelector("#send");
 const newSession = document.querySelector("#new-session");
 const status = document.querySelector("#status");
 const model = document.querySelector("#model");
+const modelPicker = document.querySelector("#model-picker");
+const modelHint = document.querySelector("#model-hint");
+const objective = document.querySelector("#task-title");
+const summary = document.querySelector("#task-summary");
+const stop = document.querySelector("#stop");
+const composerHint = document.querySelector("#composer-hint");
+const activityCount = document.querySelector("#activity-count");
+const quickActions = document.querySelector("#quick-actions");
+const fallback = document.querySelector("#discussion-fallback");
+const discussionText = document.querySelector("#discussion-text");
+const closeFallback = document.querySelector("#close-fallback");
+const targetPicker = document.querySelector("#target-picker");
+const workspaceTabs = document.querySelector("#workspace-tabs");
+const newTab = document.querySelector("#new-tab");
+const deleteTask = document.querySelector("#delete-task");
+const taskList = document.querySelector("#task-list");
+const sessionList = document.querySelector("#session-list");
+const refreshSessions = document.querySelector("#refresh-sessions");
+const refreshTasks = document.querySelector("#refresh-tasks");
+const providerList = document.querySelector("#provider-list");
+const addProvider = document.querySelector("#add-provider"); const identityList = document.querySelector("#identity-list"); const identityForm = document.querySelector("#identity-form"); const identityName = document.querySelector("#identity-name"); const identityValue = document.querySelector("#identity-value"); const identityPublicKey = document.querySelector("#identity-public-key");
+const authGate = document.querySelector("#auth-gate"); const authMessage = document.querySelector("#auth-message"); const passkeyAuth = document.querySelector("#passkey-auth");
+
+async function authenticateUi() { let response = await fetch("/auth/webauthn/register/options", { method: "POST" }); let body = await response.json(); let registration = response.ok; if (!registration) { response = await fetch("/auth/webauthn/login/options", { method: "POST" }); body = await response.json(); } if (!response.ok) throw new Error(body.error || "Passkey authentication unavailable."); const options = registration ? registrationOptionsForBrowser(body.options) : loginOptionsForBrowser(body.options); const credential = registration ? await navigator.credentials.create({ publicKey: options }) : await navigator.credentials.get({ publicKey: options }); const endpoint = registration ? "/auth/webauthn/register/verify" : "/auth/webauthn/login/verify"; const verified = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transaction: body.transaction, response: credentialToJSON(credential) }) }); if (!verified.ok) throw new Error((await verified.json()).error || "Passkey authentication failed."); }
+async function ensureUiAuth() { const probe = await fetch("/api/node"); if (probe.ok) return true; authGate.hidden = false; document.querySelector(".shell").hidden = true; authMessage.textContent = "Create or use a passkey to continue."; passkeyAuth.onclick = async () => { passkeyAuth.disabled = true; try { await authenticateUi(); location.reload(); } catch (e) { authMessage.textContent = e instanceof Error ? e.message : "Authentication failed."; passkeyAuth.disabled = false; } }; return false; }
+
 let sessionId;
 let running = false;
+let executionStatus = "ready";
+let currentAssistant = "";
+let currentObjective = "";
+let activityItems = [];
+let openQuestions = [];
+let modelProvider;
+let selectedProvider;
+let availableModelOptions = [];
+let selectedModel;
+let currentSessionProvider;
+let currentSessionModel;
+let currentTaskId;
+function notifyAttention(tab, attention) { if (!attention?.required) return; if (tab.attention?.required && tab.attention.reason === attention.reason) return; tab.attention = attention; document.title = `[!] Porta · ${tab.targetId}`; try { const audio = new AudioContext(); const oscillator = audio.createOscillator(); oscillator.frequency.value = 660; oscillator.connect(audio.destination); oscillator.start(); oscillator.stop(audio.currentTime + 0.08); } catch {} }
+function clearAttention(tab) { tab.attention = { required: false }; if (![...tabs.values()].some((entry) => entry.attention?.required)) document.title = "Porta"; }
+function renderAttentionCount() { const count = [...tabs.values()].filter((tab) => tab.attention?.required).length; document.title = count ? `[${count}] Porta` : "Porta"; }
+let selectedTargetId = localStorage.getItem("porta-target") || "local";
+let activeTabId = localStorage.getItem("porta-active-tab") || "tab-local";
+const tabs = new Map();
 
+function persistTabs() { localStorage.setItem("porta-tabs", JSON.stringify([...tabs.values()].map(({ id, targetId, sessionId, taskId, title, selectedModel, selectedProvider, currentSessionModel, currentSessionProvider, draft, status, attention }) => ({ id, targetId, sessionId, taskId, title, selectedModel, selectedProvider, currentSessionModel, currentSessionProvider, draft, status, attention })))); localStorage.setItem("porta-active-tab", activeTabId); }
+function renderTabs() { workspaceTabs.querySelectorAll("button[data-tab]").forEach((button) => button.remove()); for (const tab of tabs.values()) { const button = document.createElement("button"); button.dataset.tab = tab.id; button.className = tab.id === activeTabId ? "tab active" : "tab"; button.textContent = `${tab.title || "New task"} · ${tab.targetId}`; button.onclick = () => switchTab(tab.id); workspaceTabs.insertBefore(button, newTab); } }
+function saveActiveTab() { const tab = tabs.get(activeTabId); if (tab) Object.assign(tab, { targetId: selectedTargetId, sessionId, taskId: currentTaskId, selectedModel, selectedProvider, currentSessionModel, currentSessionProvider, draft: input.value, title: currentObjective || tab.title || "New task", status: executionStatus }); persistTabs(); }
+function switchTab(id) { if (!tabs.has(id) || id === activeTabId) return; saveActiveTab(); activeTabId = id; const tab = tabs.get(id); selectedTargetId = tab.targetId; sessionId = tab.sessionId; selectedModel = tab.selectedModel; currentTaskId = tab.taskId; selectedProvider = tab.selectedProvider; currentSessionModel = tab.currentSessionModel; currentSessionProvider = tab.currentSessionProvider; currentObjective = tab.title === "New task" ? "" : tab.title; input.value = tab.draft || ""; objective.textContent = currentObjective || "No objective yet"; messages.replaceChildren(); activityItems = []; currentAssistant = ""; setStatus(tab.status || "ready"); targetPicker.value = selectedTargetId; modelPicker.value = selectedModel || ""; renderTabs(); persistTabs(); void loadModels().catch((error) => addSystem(error instanceof Error ? error.message : "Model discovery is unavailable.")); if (sessionId) void hydrateSession(sessionId); }
+async function loadIdentities() { const response = await fetch(targetUrl("/api/identity/allowed")); if (!response.ok) { identityList.replaceChildren(); addPanelMessage(identityList, "Identity management is unavailable."); return; } identityList.replaceChildren(); const identities = (await response.json()).identities ?? []; if (!identities.length) addPanelMessage(identityList, "No machine identities configured."); for (const identity of identities) { const row = document.createElement("div"); row.className = "provider-row identity-row"; const details = document.createElement("div"); details.innerHTML = `<strong></strong><small></small><small></small>`; details.querySelector("strong").textContent = identity.displayName; details.querySelectorAll("small")[0].textContent = identity.identity; details.querySelectorAll("small")[1].textContent = `${identity.enabled ? "Enabled" : "Disabled"}${identity.lastSeenAt ? ` · last seen ${new Date(identity.lastSeenAt).toLocaleString()}` : " · never used"}`; const actions = document.createElement("div"); const toggle = document.createElement("button"); toggle.className = "quiet"; toggle.textContent = identity.enabled ? "Disable" : "Enable"; toggle.onclick = async () => { const result = await fetch(targetUrl(`/api/identity/allowed/${encodeURIComponent(identity.identity)}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !identity.enabled }) }); if (!result.ok) addPanelMessage(identityList, "Identity could not be updated."); await loadIdentities(); }; const remove = document.createElement("button"); remove.className = "quiet"; remove.textContent = "Delete"; remove.onclick = async () => { if (!confirm(`Delete ${identity.displayName}?`)) return; const result = await fetch(targetUrl(`/api/identity/allowed/${encodeURIComponent(identity.identity)}`), { method: "DELETE" }); if (!result.ok) addPanelMessage(identityList, "Identity could not be deleted."); await loadIdentities(); }; actions.append(toggle, remove); row.append(details, actions); identityList.append(row); } }
+function addPanelMessage(panel, text) { const message = document.createElement("div"); message.className = "empty-panel"; message.textContent = text; panel.append(message); }
+async function loadSessions() { const response = await fetch(targetUrl("/api/sessions")); if (!response.ok) { sessionList.replaceChildren(); addPanelMessage(sessionList, "Sessions are unavailable."); return; } const sessions = (await response.json()).sessions ?? []; sessionList.replaceChildren(); if (!sessions.length) addPanelMessage(sessionList, "No saved sessions yet. Start a new session above."); for (const session of sessions) { const row = document.createElement("div"); row.className = "provider-row"; const details = document.createElement("div"); const task = session.task; details.innerHTML = "<strong></strong><small></small>"; details.querySelector("strong").textContent = task?.objective || `Session ${session.sessionId.slice(0, 8)}`; details.querySelector("small").textContent = `${task?.status ?? "ready"} · ${session.updatedAt ? new Date(session.updatedAt).toLocaleString() : "no activity"}${task?.attention?.required ? " · attention required" : ""}`; const button = document.createElement("button"); button.className = "quiet"; button.textContent = "Open"; button.onclick = () => openServerSession(session); row.append(details, button); sessionList.append(row); } }
+function openServerSession(session) { const existing = [...tabs.values()].find((tab) => tab.sessionId === session.sessionId); if (existing) { if (existing.id !== activeTabId) switchTab(existing.id); return; } saveActiveTab(); const id = `tab-${crypto.randomUUID()}`; tabs.set(id, { id, targetId: session.target || selectedTargetId, sessionId: session.sessionId, taskId: session.task?.id, title: session.task?.objective || "Recovered session", status: session.task?.status || "ready" }); if (id !== activeTabId) switchTab(id); }
+async function loadPendingApprovals() { const response = await fetch(targetUrl("/api/approvals/pending")); if (!response.ok) return; for (const approval of (await response.json()).approvals ?? []) if (approval.sessionId === sessionId && !messages.querySelector(`[data-approval-id="${CSS.escape(approval.approvalId)}"]`)) { showApproval(approval); setStatus("waiting"); } }
+async function loadProviders() { const response = await fetch(targetUrl("/api/providers")); if (!response.ok) return; providerList.replaceChildren(); for (const provider of (await response.json()).providers ?? []) { const row = document.createElement("div"); row.textContent = `${provider.name} · ${provider.type} · ${provider.status} (${provider.modelCount} models)`; providerList.append(row); } }
+async function loadNode() { const response = await fetch(targetUrl("/api/node")); if (response.ok) { const result = await response.json(); document.title = `Porta${result.node?.name ? ` · ${result.node.name}` : ""}`; } }
+async function loadTasks() { let response; try { response = await fetch(targetUrl("/api/tasks")); } catch { for (const tab of tabs.values()) if (tab.targetId === selectedTargetId) notifyAttention(tab, { required: true, reason: "target_unavailable" }); renderAttentionCount(); return; } if (!response.ok) { for (const tab of tabs.values()) if (tab.targetId === selectedTargetId) notifyAttention(tab, { required: true, reason: "target_unavailable" }); renderAttentionCount(); return; } const result = await response.json(); taskList.replaceChildren(); for (const task of Array.isArray(result.tasks) ? result.tasks : []) { const row = document.createElement("div"); row.className = "task-row"; const tab = [...tabs.values()].find((entry) => entry.targetId === selectedTargetId && entry.taskId === task.id); if (tab) { tab.status = task.status; if (task.attention?.required) notifyAttention(tab, task.attention); else clearAttention(tab); } const details = document.createElement("span"); details.textContent = `${task.objective} · ${task.phase ?? task.status}${task.deployment ? ` · deploy ${task.deployment.status}` : ""}${task.image?.digest ? ` · ${task.image.digest.slice(0, 19)}` : ""}${task.attention?.required ? " · attention" : ""}`; row.append(details); const pending = task.pendingIntervention; if (!pending && task.phase === "ready_for_commit") { const button = document.createElement("button"); button.type = "button"; button.className = "quiet"; button.textContent = "Release"; button.onclick = async () => { const response = await fetch(targetUrl(`/api/tasks/${encodeURIComponent(task.id)}/release`), { method: "POST" }); if (!response.ok) addSystem("Release could not start; review task permissions and configuration."); await loadTasks(); }; row.append(button); } else if (!pending && task.phase && !["ready_for_commit", "completed", "failed", "blocked"].includes(task.phase)) { const button = document.createElement("button"); button.type = "button"; button.className = "quiet"; button.textContent = "Run"; button.onclick = async () => { await fetch(targetUrl(`/api/tasks/${encodeURIComponent(task.id)}/run`), { method: "POST" }); await loadTasks(); }; row.append(button); } if (pending && task.version !== undefined) { const actions = document.createElement("span"); actions.className = "task-actions"; const addAction = (name, action, input) => { const button = document.createElement("button"); button.type = "button"; button.className = action === "reject" || action === "cancel" ? "danger-control" : "quiet"; button.textContent = name; button.onclick = async () => { const response = await fetch(targetUrl(`/api/tasks/${encodeURIComponent(task.id)}/intervention`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: task.version, action, ...(input ? { input } : {}) }) }); if (!response.ok) addSystem("Task intervention was rejected; refresh and review the current state."); await loadTasks(); }; actions.append(button); }; if (pending.action === "approve") { addAction("Approve", "approve"); addAction("Reject", "reject"); } else if (pending.action === "provide_input") { const button = document.createElement("button"); button.type = "button"; button.className = "quiet"; button.textContent = "Provide input"; button.onclick = async () => { const input = window.prompt("Input for this development task:"); if (input === null) return; const response = await fetch(targetUrl(`/api/tasks/${encodeURIComponent(task.id)}/intervention`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: task.version, action: "provide_input", input }) }); if (!response.ok) addSystem("Task intervention was rejected; refresh and review the current state."); await loadTasks(); }; actions.append(button); } else addAction("Resume", "resume"); addAction("Cancel", "cancel"); row.append(actions); } if (task.deletable) { const button = document.createElement("button"); button.type = "button"; button.className = "quiet"; button.textContent = "Delete"; button.onclick = async () => { if (!confirm(`Delete \"${task.objective}\"?`)) return; const deleted = await fetch(targetUrl(`/api/tasks/${encodeURIComponent(task.id)}`), { method: "DELETE" }); if (deleted.ok) await loadTasks(); else addSystem("Task could not be deleted."); }; row.append(button); } taskList.append(row); } renderAttentionCount(); }
 function addMessage(kind, text = "") {
-  const element = document.createElement("article");
-  element.className = `message ${kind}`;
+  const element = document.createElement("article"); element.className = `message ${kind}`;
   const label = document.createElement("div"); label.className = "label"; label.textContent = kind === "user" ? "You" : "Porta";
   const content = document.createElement("div"); content.className = "content"; content.textContent = text;
-  element.append(label, content); messages.append(element); messages.querySelector(".empty")?.remove();
-  return content;
+  element.append(label, content); messages.append(element); messages.querySelector(".empty")?.remove(); return { element, content };
 }
-function addSystem(text) { const element = document.createElement("div"); element.className = "muted"; element.textContent = text; messages.append(element); }
-function addTool(event, result) {
-  const row = document.createElement("div"); row.className = `tool${result?.error ? " error" : ""}`;
-  const dot = document.createElement("span"); dot.className = "dot"; dot.textContent = result?.error ? "×" : "·";
-  const name = document.createElement("span"); name.textContent = event.toolId;
-  row.append(dot, name); if (result?.error) { const error = document.createElement("span"); error.textContent = ` ${result.error.message}`; row.append(error); }
-  messages.append(row);
+function addSystem(text) { const element = document.createElement("div"); element.className = "muted system-note"; element.textContent = text; messages.append(element); return element; }
+function addActivity(text, kind = "") {
+  const row = document.createElement("div"); row.className = `activity-item ${kind}`; row.textContent = text; messages.append(row);
+  activityItems.push(text); if (activityItems.length > 40) activityItems.shift(); activityCount.textContent = `${activityItems.length} event${activityItems.length === 1 ? "" : "s"}`; row.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 function showApproval(event) {
-  const box = document.createElement("div"); box.className = "approval";
+  openQuestions.push(`Approval required for ${event.toolId}`); renderQuickActions();
+  const box = document.createElement("div"); box.className = "approval"; box.dataset.approvalId = event.approvalId;
   const title = document.createElement("div"); title.className = "approval-title"; title.textContent = `Approval required · ${event.toolId}`;
   const details = document.createElement("div"); details.className = "approval-input"; details.textContent = JSON.stringify(event.input, null, 2);
   const actions = document.createElement("div"); actions.className = "approval-actions";
-  for (const [decision, text] of [["approve", "Approve"], ["deny", "Deny"]]) { const button = document.createElement("button"); button.type = "button"; button.textContent = text; button.className = decision; button.onclick = () => resolveApproval(event.approvalId, decision, box); actions.append(button); }
+  for (const [decision, text] of [["approve", "Allow once"], ["deny", "Deny"]]) { const button = document.createElement("button"); button.type = "button"; button.textContent = text; button.className = decision; button.onclick = () => resolveApproval(event.approvalId, decision, box); actions.append(button); }
   box.append(title, details, actions); messages.append(box); box.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 async function resolveApproval(approvalId, decision, box) {
   box.querySelectorAll("button").forEach((button) => button.disabled = true);
-  await fetch(`/api/approvals/${encodeURIComponent(approvalId)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }) });
-  box.remove();
+  const response = await fetch(targetUrl(`/api/approvals/${encodeURIComponent(approvalId)}`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }) });
+  if (!response.ok) addSystem("Porta could not resolve that approval."); else { box.remove(); addActivity(`${decision === "approve" ? "Allowed" : "Denied"} approval`, decision); openQuestions = []; renderQuickActions(); }
 }
-async function createSession(session) {
-  let response = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(session ? { sessionId: session } : {}) });
-  let result = await response.json();
-  // A saved session can be closed or belong to an older server instance.
-  // Recover by creating a fresh session instead of leaving sessionId undefined.
-  if (!response.ok && session) {
-    localStorage.removeItem("porta-session");
-    response = await fetch("/api/sessions", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    result = await response.json();
+async function createSession(saved, storageKey = "porta-session", selection) {
+  const endpoint = targetUrl("/api/sessions"); const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(saved ? { sessionId: saved } : {}), ...(selection ? { model: selection } : {}) }) });
+  let result; try { result = await response.json(); } catch { result = {}; }
+  // A failed resume is surfaced to the caller; the caller may explicitly discard it.
+  // Keep the storage key available here for compatibility with the recovery contract;
+  // recovery callers use localStorage.removeItem(storageKey) only after an explicit failure.
+  if (!response.ok || typeof result.sessionId !== "string") throw new Error(result.error?.message ?? result.error ?? "Could not create or resume this session.");
+  localStorage.setItem(storageKey, result.sessionId); return result.sessionId;
+}
+async function hydrateSession(id) {
+  const response = await fetch(targetUrl(`/api/sessions/${encodeURIComponent(id)}`));
+  if (!response.ok) return;
+  const session = await response.json(); messages.replaceChildren(); currentAssistant = ""; activityItems = [];
+  for (const message of Array.isArray(session.history) ? session.history : []) {
+    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+    const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+    const rendered = addMessage(message.role, text); if (message.role === "assistant") currentAssistant = text;
   }
-  if (!response.ok) throw new Error(result.error?.message ?? result.error ?? "Could not create session.");
-  sessionId = result.sessionId; localStorage.setItem("porta-session", sessionId); return sessionId;
+  if (!session.history?.length) messages.innerHTML = '<div class="empty">Your objective, assistant output, tool calls, and approvals will appear here.</div>';
 }
-function resizeInput() {
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
-  input.scrollTop = input.scrollHeight;
+function targetUrl(path) { const separator = path.includes("?") ? "&" : "?"; return `${path}${separator}target=${encodeURIComponent(selectedTargetId)}`; }
+async function loadTargets() { const response = await fetch("/api/targets"); if (!response.ok) return; const result = await response.json(); const targets = Array.isArray(result.targets) ? result.targets : []; targetPicker.replaceChildren(); for (const target of targets) { if (!target || typeof target.id !== "string") continue; const item = document.createElement("option"); item.value = target.id; item.textContent = target.displayName || target.id; targetPicker.append(item); } if (!targets.some((target) => target.id === selectedTargetId)) selectedTargetId = "local"; targetPicker.value = selectedTargetId; }
+async function loadModels() {
+  const response = await fetch(targetUrl("/api/models")); if (!response.ok) throw new Error("Model discovery is unavailable.");
+  const result = await response.json(); modelProvider = result.provider; currentSessionProvider = result.current?.provider || result.provider; currentSessionModel = result.current?.model;
+  const options = Array.isArray(result.models) ? result.models.filter((option) => option && typeof option.id === "string" && typeof option.provider === "string") : []; availableModelOptions = options; const currentOption = options.find((option) => option.provider === currentSessionProvider && option.id === currentSessionModel); selectedProvider = currentOption?.provider || selectedProvider || result.provider; modelPicker.replaceChildren();
+  for (const option of options) { const item = document.createElement("option"); item.value = option.id; item.textContent = option.displayName || option.id; modelPicker.append(item); }
+  const valid = (value) => result.status === "available" && options.some((option) => option.id === value);
+  const remembered = localStorage.getItem("porta-model");
+  // Preserve a live user choice across catalog refreshes; current is only an initial fallback.
+  if (!valid(selectedModel)) selectedModel = valid(remembered) ? remembered : (valid(currentSessionModel) ? currentSessionModel : options[0]?.id);
+  if (selectedModel) { modelPicker.value = selectedModel; selectedProvider = options.find((option) => option.id === selectedModel)?.provider || selectedProvider; } modelPicker.disabled = options.length === 0 || result.status !== "available"; model.textContent = `${currentSessionProvider ?? "model"} · ${currentSessionModel ?? "unavailable"}${result.status === "unavailable" ? " · unavailable" : ""}`;
+  if (result.error) addSystem(result.error);
+}
+function updateModelHint() { const changed = Boolean(selectedModel && currentSessionModel && selectedModel !== currentSessionModel); modelHint.hidden = !changed; modelHint.textContent = changed ? `New sessions will use ${selectedModel}. Current session remains ${currentSessionModel}.` : ""; }
+function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 180)}px`; input.scrollTop = input.scrollHeight; }
+function boundedSnapshot() { return { objective: currentObjective || "Not specified", status: executionStatus, summary: currentAssistant.slice(-1000), recentFindings: activityItems.slice(-6), openQuestion: openQuestions[0] ?? "No specific question recorded" }; }
+function discussionSnapshotText() { const snapshot = boundedSnapshot(); return `Task:\n${snapshot.objective}\n\nCurrent status:\n${snapshot.status}\n\nAgent summary:\n${snapshot.summary || "No summary available yet."}\n\nRecent relevant findings:\n${snapshot.recentFindings.join("\n") || "None recorded."}\n\nOpen question / decision:\n${snapshot.openQuestion}\n\nPlease help me think through the best next step.`; }
+function suggestedActions() {
+  if (executionStatus !== "waiting" || running || openQuestions.length) return [];
+  const findings = activityItems.join(" ").toLowerCase(); const actions = [];
+  if (findings.includes("test") || findings.includes("build")) actions.push({ label: "Run the full test suite", message: "Run the full test suite and use the results to guide the next implementation step." });
+  if (findings.includes("filesystem") || findings.includes("search")) actions.push({ label: "Keep the existing architecture", message: "Keep the existing architecture and make the smallest safe change toward the objective." });
+  actions.push({ label: "Compare both approaches first", message: "Compare the viable approaches briefly, then choose the safest one using the available evidence." });
+  return actions.slice(0, 2);
+}
+function renderQuickActions() {
+  quickActions.replaceChildren();
+  if (executionStatus !== "waiting" || running) { quickActions.hidden = true; return; }
+  const continueButton = document.createElement("button"); continueButton.type = "button"; continueButton.className = "primary-control"; continueButton.textContent = "Continue your work"; continueButton.onclick = () => submit("Continue working toward the current objective.\n\nResolve routine implementation decisions yourself using the available workspace, tools, task context, and evidence.\n\nOnly stop again if explicit user approval is required, information is genuinely unavailable, there is a real product or design decision that cannot be inferred safely, or the task is complete."); quickActions.append(continueButton);
+  const discussButton = document.createElement("button"); discussButton.type = "button"; discussButton.textContent = "Discuss it"; discussButton.onclick = copyDiscussionContext; quickActions.append(discussButton);
+  for (const action of suggestedActions()) { const button = document.createElement("button"); button.type = "button"; button.textContent = action.label; button.title = action.message; button.onclick = () => submit(action.message); quickActions.append(button); }
+  quickActions.hidden = false;
+}
+async function copyDiscussionContext() {
+  const text = discussionSnapshotText();
+  try { if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable"); await navigator.clipboard.writeText(text); const button = [...quickActions.querySelectorAll("button")].find((item) => item.textContent === "Discuss it"); if (button) { button.textContent = "Copied"; setTimeout(() => { if (button.isConnected) button.textContent = "Discuss it"; }, 1800); } }
+  catch { discussionText.value = text; fallback.hidden = false; discussionText.focus(); discussionText.select(); }
+}
+async function refreshTask() { if (!sessionId) return; const response = await fetch(targetUrl(`/api/sessions/${encodeURIComponent(sessionId)}/task`)); if (response.ok) { const task = await response.json(); currentTaskId = task.id; const active = tabs.get(activeTabId); if (active) active.taskId = task.id; deleteTask.disabled = task.status === "active" || task.status === "blocked"; } }
+function setStatus(next, message) {
+  executionStatus = next; status.textContent = message ?? ({ working: "Working…", waiting: "Waiting for input", completed: "Completed", cancelled: "Stopped", ready: "Ready" }[next] ?? next); status.className = `status-badge ${next}`;
+  stop.disabled = !running; send.disabled = running; composerHint.textContent = running ? "Execution is active; new prompts are disabled" : "Enter sends · Shift+Enter adds a line";
+  summary.textContent = running ? "Porta is working on this objective. Activity will continue to appear below." : next === "waiting" ? "Porta is waiting for input. Choose a quick action or write your own response." : currentObjective ? `Session ${sessionId?.slice(0, 8) ?? ""}` : "Start a task and Porta will keep its work visible here.";
+  renderQuickActions();
+}
+async function stream(url, body, onEvent) {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!response.ok || !response.body) { let detail; try { detail = await response.json(); } catch {} throw new Error(detail?.error?.message ?? detail?.error ?? "The server could not start the execution."); }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader(); let buffer = "";
+  while (true) { const next = await reader.read(); if (next.done) break; buffer += next.value; const lines = buffer.split("\n"); buffer = lines.pop() ?? ""; for (const line of lines) if (line) onEvent(JSON.parse(line)); } if (buffer) onEvent(JSON.parse(buffer));
 }
 async function submit(text) {
-  if (running) return; running = true; send.disabled = true; status.textContent = "Working…";
-  addMessage("user", text); const assistant = addMessage("assistant");
-  try {
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input: text }) });
-    if (!response.ok || !response.body) throw new Error("The server could not start the execution.");
-    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader(); let buffer = "";
-    while (true) { const next = await reader.read(); if (next.done) break; buffer += next.value; const lines = buffer.split("\n"); buffer = lines.pop() ?? ""; for (const line of lines) if (line) handleEvent(JSON.parse(line), assistant); }
-    if (buffer) handleEvent(JSON.parse(buffer), assistant);
-  } catch (error) { addSystem(error instanceof Error ? error.message : "Request failed."); }
-  running = false; send.disabled = false; status.textContent = "Ready"; input.focus();
+  if (running || !sessionId) return; running = true; currentAssistant = ""; setStatus("working"); addMessage("user", text); const assistant = addMessage("assistant"); if (!currentObjective) { currentObjective = text; objective.textContent = text; }
+  try { await stream(targetUrl(`/api/sessions/${encodeURIComponent(sessionId)}/messages`), { input: text }, (event) => handleEvent(event, assistant)); } catch (error) { addSystem(error instanceof Error ? error.message : "Request failed."); setStatus("waiting"); }
+  finally { running = false; setStatus(executionStatus === "working" ? "waiting" : executionStatus); await refreshTask(); await loadTasks(); saveActiveTab(); input.focus(); }
 }
 function handleEvent(event, assistant) {
-  if (event.type === "OutputDelta") assistant.textContent += event.text;
-  else if (event.type === "ToolCompleted") addTool(event, event.result);
-  else if (event.type === "ApprovalRequested") showApproval(event);
-  else if (event.type === "ExecutionCompleted") status.textContent = "Ready";
-  else if (event.type === "ExecutionCancelled") status.textContent = "Cancelled";
-  else if (event.type === "Error") addSystem(event.error.message);
+  if (event.type === "OutputDelta") { currentAssistant += event.text; assistant.content.textContent += event.text; }
+  else if (event.type === "ToolRequested") addActivity(`Requested · ${event.toolId}`, "tool");
+  else if (event.type === "ToolStarted") addActivity(`Started · ${event.toolId}`, "tool");
+  else if (event.type === "ToolCompleted") { addActivity(`${event.result?.error ? "Failed" : "Completed"} · ${event.toolId}`, event.result?.error ? "error" : "tool"); if (event.result?.error) addSystem(event.result.error.message); }
+  else if (event.type === "ApprovalRequested") { const active = tabs.get(activeTabId); if (active) notifyAttention(active, { required: true, reason: "approval_required" }); setStatus("waiting"); showApproval(event); }
+  else if (event.type === "ExecutionCompleted") { const active = tabs.get(activeTabId); if (active) clearAttention(active); setStatus("completed"); }
+  else if (event.type === "ExecutionCancelled") { addActivity("Execution stopped", "cancelled"); setStatus("cancelled"); }
+  else if (event.type === "Error") { addSystem(event.error.message); setStatus(event.error.code === "CAPABILITY_CONFLICT" ? "working" : "waiting"); }
   messages.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
-form.addEventListener("submit", (event) => { event.preventDefault(); const text = input.value.trim(); if (text && sessionId) { input.value = ""; resizeInput(); submit(text); } });
-newSession.addEventListener("click", async () => {
-  if (running) return;
-  localStorage.removeItem("porta-session");
-  sessionId = undefined;
-  messages.replaceChildren();
-  try { await createSession(); status.textContent = "Ready"; input.focus(); }
-  catch (error) { addSystem(error instanceof Error ? error.message : "Could not create session."); }
-});
-input.addEventListener("input", resizeInput);
-input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
-(async () => { try { await createSession(localStorage.getItem("porta-session")); model.textContent = "local session"; } catch (error) { addSystem(error instanceof Error ? error.message : "Could not connect to Porta."); } })();
+form.addEventListener("submit", (event) => { event.preventDefault(); const text = input.value.trim(); if (text && sessionId && !running) { input.value = ""; resizeInput(); submit(text); } });
+newSession.addEventListener("click", async () => { if (running) return; localStorage.removeItem("porta-session"); sessionId = undefined; currentObjective = ""; currentAssistant = ""; activityItems = []; openQuestions = []; objective.textContent = "No objective yet"; messages.replaceChildren(); setStatus("ready"); try { sessionId = await createSession(undefined, "porta-session", selectedModel && selectedProvider ? { provider: selectedProvider, model: selectedModel } : undefined); currentSessionProvider = selectedProvider; currentSessionModel = selectedModel; model.textContent = `${currentSessionProvider ?? "model"} · ${currentSessionModel ?? "unavailable"}`; updateModelHint(); input.focus(); } catch (error) { addSystem(error instanceof Error ? error.message : "Could not connect to Porta."); } });
+refreshSessions.addEventListener("click", () => void loadSessions());
+refreshTasks.addEventListener("click", () => void loadTasks());
+identityForm.addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch(targetUrl("/api/identity/allowed"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ displayName: identityName.value.trim(), identity: identityValue.value.trim(), publicKey: identityPublicKey.value.trim(), algorithm: "ed25519" }) }); if (!response.ok) addSystem("Identity could not be added."); else { identityForm.reset(); await loadIdentities(); } });
+addProvider.addEventListener("click", async () => { const type = prompt("Provider type (openai-compatible or ollama)", "openai-compatible"); if (type !== "openai-compatible" && type !== "ollama") return; const name = prompt("Provider name", type === "ollama" ? "Ollama" : "OpenAI-compatible server"); const endpoint = name && prompt("Base URL (include /v1 for OpenAI-compatible)", type === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:8080/v1"); if (!name || !endpoint) return; const body = { id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, type, endpoint }; const response = await fetch(targetUrl("/api/providers"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); if (!response.ok) addSystem("Provider could not be added."); else { await loadProviders(); await loadModels(); } });
+deleteTask.addEventListener("click", async () => { if (!currentTaskId || !confirm("Delete this persisted task?")) return; const response = await fetch(targetUrl(`/api/tasks/${encodeURIComponent(currentTaskId)}`), { method: "DELETE" }); if (!response.ok) { addSystem("Task could not be deleted; active tasks must be completed or cancelled first."); return; } currentTaskId = undefined; const active = tabs.get(activeTabId); if (active) active.taskId = undefined; deleteTask.disabled = true; await loadTasks(); currentObjective = ""; objective.textContent = "No objective yet"; addSystem("Task deleted."); });
+stop.addEventListener("click", async () => { if (!running || !sessionId) return; stop.disabled = true; status.textContent = "Stopping…"; await fetch(targetUrl(`/api/sessions/${encodeURIComponent(sessionId)}/cancel`), { method: "POST" }); });
+closeFallback.addEventListener("click", () => { fallback.hidden = true; });
+modelPicker.addEventListener("change", async () => { const nextModel = modelPicker.value; const nextOption = availableModelOptions.find((option) => option.id === nextModel); if (!nextModel || !nextOption || running) return; selectedModel = nextModel; selectedProvider = nextOption.provider; localStorage.setItem("porta-model", selectedModel); if (sessionId && selectedModel !== currentSessionModel) { modelPicker.disabled = true; try { sessionId = await createSession(undefined, "porta-session", { provider: selectedProvider, model: selectedModel }); currentSessionProvider = selectedProvider; currentSessionModel = selectedModel; currentObjective = ""; currentAssistant = ""; currentTaskId = undefined; messages.replaceChildren(); objective.textContent = "No objective yet"; } catch (error) { addSystem(error instanceof Error ? error.message : "Could not select that model."); } finally { modelPicker.disabled = false; } } saveActiveTab(); updateModelHint(); input.focus(); });
+targetPicker.addEventListener("change", async () => { saveActiveTab(); selectedTargetId = targetPicker.value || "local"; localStorage.setItem("porta-target", selectedTargetId); const tab = tabs.get(activeTabId); if (tab?.sessionId) { const id = `tab-${crypto.randomUUID()}`; tabs.set(id, { id, targetId: selectedTargetId, title: "New task", status: "ready" }); switchTab(id); } else if (tab) { tab.targetId = selectedTargetId; addSystem(`Target changed to ${selectedTargetId}.`); await loadModels(); renderTabs(); } });
+newTab.addEventListener("click", () => { saveActiveTab(); const id = `tab-${crypto.randomUUID()}`; tabs.set(id, { id, targetId: "local", title: "New task", status: "ready" }); switchTab(id); });
+window.setInterval(() => void loadTasks(), 5000);
+input.addEventListener("input", resizeInput); input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
+(async () => { try { if (!await ensureUiAuth()) return; const stored = JSON.parse(localStorage.getItem("porta-tabs") || "[]"); for (const tab of Array.isArray(stored) ? stored : []) if (tab && typeof tab.id === "string") tabs.set(tab.id, tab); if (!tabs.has(activeTabId)) tabs.set(activeTabId, { id: activeTabId, targetId: selectedTargetId, title: "New task", status: "ready" }); renderTabs(); await loadTargets(); await loadNode(); await loadSessions(); await loadPendingApprovals(); await loadProviders(); await loadIdentities(); await loadTasks(); try { await loadModels(); } catch (error) { addSystem(error instanceof Error ? error.message : "Model discovery is unavailable."); } const savedSession = localStorage.getItem("porta-session"); try { sessionId = await createSession(savedSession, "porta-session", selectedModel && selectedProvider ? { provider: selectedProvider, model: selectedModel } : undefined); } catch (error) { if (!savedSession) throw error; localStorage.removeItem("porta-session"); addSystem("The previous session is no longer available; started a new session."); sessionId = await createSession(undefined, "porta-session", selectedModel && selectedProvider ? { provider: selectedProvider, model: selectedModel } : undefined); } if (!savedSession && selectedModel) { currentSessionProvider = selectedProvider; currentSessionModel = selectedModel; } await hydrateSession(sessionId); await loadPendingApprovals(); model.textContent = `${currentSessionProvider ?? "model"} · ${currentSessionModel ?? "configured default"}`; updateModelHint(); setStatus("ready"); } catch (error) { addSystem(error instanceof Error ? error.message : "Could not connect to Porta."); } })();

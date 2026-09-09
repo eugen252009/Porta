@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { failure, HarnessFailure, jsonValueSchema, type HarnessPlugin, type HealthCheckable, type HealthStatus, type JsonValue, type ModelContext, type ModelDescriptor, type ModelEvent, type ModelProvider, type ModelRequest, type ModelToolCall } from "../contracts.js";
+import { failure, HarnessFailure, jsonValueSchema, type HarnessPlugin, type HealthCheckable, type HealthStatus, type JsonValue, type ModelContext, type ModelDescriptor, type ModelOption, type ModelEvent, type ModelProvider, type ModelRequest, type ModelToolCall } from "../contracts.js";
 import { CodexAuth, codexLoginHint, type CodexAuthSource } from "./codex-auth.js";
 
 export const openAICodexModelProviderConfigSchema = z.object({
@@ -9,6 +9,16 @@ export const openAICodexModelProviderConfigSchema = z.object({
   maxResponseBytes: z.number().int().positive().max(64 * 1024 * 1024).default(8 * 1024 * 1024),
 });
 export type OpenAICodexModelProviderConfig = z.input<typeof openAICodexModelProviderConfigSchema>;
+/** Provider-owned fallback catalog used when the subscription API does not expose model discovery. */
+export const codexModelOptions: readonly ModelOption[] = [
+  { id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", provider: "openai-codex" },
+  { id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", provider: "openai-codex" },
+  { id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", provider: "openai-codex" },
+  { id: "gpt-5.6-astra", displayName: "GPT-5.6 Astra", provider: "openai-codex" },
+  { id: "gpt-4o", displayName: "GPT-4o", provider: "openai-codex" },
+  { id: "o3-mini", displayName: "o3-mini", provider: "openai-codex" },
+  { id: "gpt-4o-mini", displayName: "GPT-4o mini", provider: "openai-codex" },
+];
 export type CodexFetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 const capabilities = [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }, { id: "model.tools", version: "1" }];
 const endpoint = "https://chatgpt.com/backend-api/codex/responses";

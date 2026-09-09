@@ -10,7 +10,8 @@
     "dist/src",
     "web",
     "porta-tui.json",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -24,6 +25,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "porta": "npm run build && node dist/src/main.js",
     "start": "node dist/src/main.js",
+    "doctor": "npm run build && node dist/src/main.js doctor",
     "harness": "npm run porta",
     "porta:tui": "npm run build && node dist/src/main-tui.js",
     "porta:web": "npm run build && node dist/src/main-web.js",
@@ -32,6 +34,8 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.85.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "@simplewebauthn/browser": "^13.2.2",
+    "@simplewebauthn/server": "^13.2.2",
     "ajv": "^8.20.0",
     "ink": "^7.1.1",
     "react": "^19.2.8",

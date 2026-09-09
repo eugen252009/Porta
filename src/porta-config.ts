@@ -44,16 +44,24 @@ const modelConfigSchema = z.preprocess(
   ])
 );
 
+const targetConfigSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), name: z.string().min(1), endpoint: z.string().url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol), "Target endpoint must use http or https") }).strict();
+const providerConfigSchema = z.object({ id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), type: z.enum(["ollama", "openai-compatible"]), name: z.string().min(1), endpoint: z.string().url().refine((value) => ["http:", "https:"].includes(new URL(value).protocol)), model: z.string().min(1).optional() }).strict();
+const providerConfigListSchema = z.array(providerConfigSchema).superRefine((value, context) => { const ids = new Set<string>(); for (const provider of value) { if (ids.has(provider.id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate provider id '${provider.id}'.` }); ids.add(provider.id); } });
+const webConfigSchema = z.object({ targets: z.array(targetConfigSchema).default([]), port: z.number().int().positive().default(4173) }).default({ targets: [], port: 4173 }).superRefine((value, context) => { const ids = new Set(["local"]); for (const target of value.targets) { if (ids.has(target.id)) context.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate target id '${target.id}'.` }); ids.add(target.id); } });
 export const portaConfigSchema = z.object({
   model: modelConfigSchema,
   tools: z.array(toolConfigSchema).default([]),
   authorization: z.object({ mode: z.enum(["allow-all", "require-approval"]) }).default({ mode: "require-approval" }),
   agent: z.object({ maxSteps: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional() }).default({}),
+  delegation: z.object({ enabled: z.boolean().default(false), maxDepth: z.number().int().nonnegative().default(2), maxChildren: z.number().int().positive().default(4) }).optional(),
   conversation: z.object({ maxTurns: z.number().int().positive().optional(), compaction: z.object({ enabled: z.boolean().default(false), keepRecentTurns: z.number().int().positive().default(4), maxManifestEntries: z.number().int().positive().default(20) }).optional() }).default({}),
   filesystem: z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().optional(), maxReadBytes: z.number().int().positive().optional(), maxSummaryChars: z.number().int().positive().optional(), mutation: z.object({ enabled: z.boolean().default(false), maxWriteBytes: z.number().int().positive().optional(), maxPatchTargetBytes: z.number().int().positive().optional() }).optional() }).optional(),
   execution: z.object({ enabled: z.boolean().default(false), allowedCommands: z.array(z.string().min(1)).default([]), defaultTimeoutMs: z.number().int().positive().default(120000), maxStdoutBytes: z.number().int().positive().default(262144), maxStderrBytes: z.number().int().positive().default(262144), filesystem: z.enum(["allow", "deny", "best-effort"]).default("best-effort"), network: z.enum(["allow", "deny", "best-effort"]).default("best-effort"), codeLoading: z.enum(["allow", "deny", "best-effort"]).default("best-effort"), environment: z.record(z.string()).default({}), allowedEnvironmentKeys: z.array(z.string()).default(["PATH"]), sandbox: z.object({ preference: z.array(z.string().min(1)).default(["sandbox.linux-bubblewrap", "sandbox.host-process"]) }).default({}) }).optional(),
   git: z.object({ enabled: z.boolean().default(false), executable: z.string().min(1).optional(), maxStatusEntries: z.number().int().positive().default(1000), maxDiffBytes: z.number().int().positive().default(262144), maxShowBytes: z.number().int().positive().default(262144), maxLogEntries: z.number().int().positive().max(100).default(20) }).optional(),
   persistence: z.object({ enabled: z.boolean().default(false), driver: z.literal("sqlite").default("sqlite"), path: z.string().min(1).default(".porta/porta.db"), maxArtifactBytes: z.number().int().positive().default(64 * 1024 * 1024), maxArtifactContextBytes: z.number().int().positive().default(64 * 1024) }).optional(),
+  web: webConfigSchema.optional(),
+  deployment: z.object({ imageRepository: z.string().min(1), registry: z.string().url().or(z.string().regex(/^[^/]+:\\d+$/)), target: z.string().min(1).default("porta-nas") }).strict().optional(),
+  providers: providerConfigListSchema.optional(),
 });
 export type PortaConfig = z.infer<typeof portaConfigSchema>;
 /** @deprecated Use PortaConfig. */
@@ -67,11 +75,15 @@ export const parseHarnessConfig = parsePortaConfig;
 
 export async function loadPortaConfig(path = process.env.PORTA_CONFIG ?? process.env.HARNESS_CONFIG): Promise<PortaConfig> {
   let targetPath = path;
-  if (targetPath === undefined) {
+  const noConfig = targetPath === "" || (targetPath === undefined && (process.env.PORTA_CONFIG === "" || process.env.HARNESS_CONFIG === ""));
+  if (targetPath === undefined && !noConfig) {
     if (existsSync("porta.json")) targetPath = "porta.json";
     else if (existsSync(".porta/config.json")) targetPath = ".porta/config.json";
   }
   let file: Record<string, unknown> = {};
+  if (!targetPath && !noConfig) targetPath = "porta.json";
+  if (!targetPath) targetPath = "";
+  if (targetPath && !existsSync(targetPath)) { try { await mkdir(dirname(targetPath) || ".", { recursive: true }); await writeFile(targetPath, "{}\n", "utf8"); } catch (error) { throw new Error(`Porta cannot create ${targetPath}: ${error instanceof Error ? error.message : "permission denied"}`); } }
   if (targetPath) file = JSON.parse(await readFile(targetPath, "utf8")) as Record<string, unknown>;
   const model = (file.model ?? {}) as Record<string, unknown>;
   const provider = model.provider ?? process.env.PORTA_MODEL_PROVIDER ?? "ollama";
@@ -102,7 +114,12 @@ export async function loadPortaConfig(path = process.env.PORTA_CONFIG ?? process
 
   const value = {
     ...file,
+    ...(file.deployment === undefined && process.env.PORTA_IMAGE_REPOSITORY ? { deployment: { imageRepository: process.env.PORTA_IMAGE_REPOSITORY, registry: process.env.PORTA_IMAGE_REGISTRY ?? "192.168.188.2:9006", target: process.env.PORTA_DEPLOYMENT_TARGET ?? "porta-nas" } } : {}),
     model: modelObj,
+    // Container deployments always provide a durable /data volume. Keep the
+    // historical opt-in default for local use, but never accidentally run a
+    // configured container with in-memory recovery state.
+    ...(file.persistence === undefined && process.env.PORTA_DATA_DIR ? { persistence: { enabled: true, driver: "sqlite", path: `${process.env.PORTA_DATA_DIR}/porta.db` } } : {}),
   };
   return parsePortaConfig(value);
 }

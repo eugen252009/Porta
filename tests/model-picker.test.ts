@@ -2,6 +2,8 @@ import { PassThrough, Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { ModelPicker } from "../src/model-picker.js";
 import { parsePortaConfig } from "../src/porta-config.js";
+import { codexModelOptions } from "../src/adapters/model-openai-codex.js";
+import { fetchAvailableModelOptions } from "../src/model-picker.js";
 
 describe("ModelPicker", () => {
   it("interactively selects provider and model options", async () => {
@@ -25,6 +27,13 @@ describe("ModelPicker", () => {
     });
     expect(text).toContain("--- Porta Model Selection ---");
     expect(text).toContain("Select a model provider:");
+  });
+
+  it("uses the provider-owned Codex catalog for web and CLI discovery", async () => {
+    const models = await fetchAvailableModelOptions("openai-codex");
+    expect(models).toBe(codexModelOptions);
+    expect(models.map((model) => model.id)).toContain("gpt-5.6-sol");
+    expect(models.every((model) => model.provider === "openai-codex" && model.displayName.length > 0)).toBe(true);
   });
 
   it("selects provider by preferred key or throws if unavailable", async () => {

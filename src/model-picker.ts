@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import process from "node:process";
-import { ModelProvider } from "./contracts.js";
+import { ModelOption, ModelProvider } from "./contracts.js";
+import { codexModelOptions } from "./adapters/model-openai-codex.js";
 import { PortaConfig } from "./porta-config.js";
 
 export interface ModelPickerOptions {
@@ -8,10 +9,7 @@ export interface ModelPickerOptions {
   output?: NodeJS.WritableStream;
 }
 
-export async function fetchAvailableModels(
-  provider: "ollama" | "openai-compatible" | "openai-codex",
-  baseUrl?: string
-): Promise<string[]> {
+export async function fetchAvailableModelOptions(provider: "ollama" | "openai-compatible" | "openai-codex", baseUrl?: string): Promise<readonly ModelOption[]> {
   try {
     if (provider === "ollama") {
       const root = (baseUrl || "http://localhost:11434").replace(/\/+$/, "");
@@ -19,7 +17,7 @@ export async function fetchAvailableModels(
       if (res.ok) {
         const json = (await res.json()) as { models?: Array<{ name?: string; model?: string }> };
         const names = (json.models ?? []).map((m) => m.name || m.model).filter((n): n is string => Boolean(n));
-        if (names.length > 0) return names;
+        if (names.length > 0) return names.map((id) => ({ id, displayName: id, provider }));
       }
     } else if (provider === "openai-compatible") {
       const root = (baseUrl || "http://127.0.0.1:8080").replace(/\/+$/, "");
@@ -28,15 +26,19 @@ export async function fetchAvailableModels(
       if (res.ok) {
         const json = (await res.json()) as { data?: Array<{ id?: string }> };
         const names = (json.data ?? []).map((m) => m.id).filter((n): n is string => Boolean(n));
-        if (names.length > 0) return names;
+        if (names.length > 0) return names.map((id) => ({ id, displayName: id, provider }));
       }
-    } else if (provider === "openai-codex") {
-      return ["gpt-5.6-sol", "gpt-4o", "o3-mini", "gpt-4o-mini"];
+    } else {
+      return codexModelOptions;
     }
   } catch {
     // If fetching times out or fails, return empty list
   }
   return [];
+}
+
+export async function fetchAvailableModels(provider: "ollama" | "openai-compatible" | "openai-codex", baseUrl?: string): Promise<string[]> {
+  return (await fetchAvailableModelOptions(provider, baseUrl)).map((option) => option.id);
 }
 
 export class ModelPicker {

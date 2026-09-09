@@ -1,0 +1,11 @@
+services:
+  porta:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4173:4173"
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      # Add explicit workspace mounts only when required.
+      # - ./workspaces:/workspaces

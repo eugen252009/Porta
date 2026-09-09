@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AgentEvent, AgentExecution, AgentOrchestrator } from "./agent.js";
 import { PendingApprovalEvent, PendingApprovalProvider } from "./approval-pending.js";
-import { ApplicationGateway, CommandContext, ConversationStore, ConversationSnapshot, KernelCommand, KernelEvent, ModelContext, ModelProvider, ToolAuthorizationPolicy, ToolDescriptor, failure, HarnessFailure, resolveApprovalCommandSchema } from "./contracts.js";
+import { ApplicationGateway, CommandContext, ConversationStore, ConversationSnapshot, KernelCommand, KernelEvent, ModelContext, ModelProvider, ModelSelection, ToolAuthorizationPolicy, ToolDescriptor, failure, HarnessFailure, resolveApprovalCommandSchema } from "./contracts.js";
 import { MemoryConversationStore, sessionFromBase } from "./conversation.js";
 import { ConversationCompactor, DeterministicConversationCompactor } from "./compaction.js";
 import { ScratchpadStore } from "./scratchpad.js";
@@ -11,13 +11,21 @@ import { ToolRouter } from "./tools.js";
 export interface ConversationContextOptions { enabled?: boolean; threshold?: number; keepRecentTurns?: number; maxManifestEntries?: number; maxSummaryChars?: number; compactor?: ConversationCompactor; scratchpad?: ScratchpadStore; taskStore?: TaskStore }
 export class InteractiveApprovalGateway implements ApplicationGateway {
   private readonly active = new Map<string, AgentExecution>();
-  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter, private readonly pending: PendingApprovalProvider, private readonly policy: ToolAuthorizationPolicy, private readonly limits = { maxSteps: 8, maxToolCalls: 16 }, private readonly conversations: ConversationStore = new MemoryConversationStore(), private readonly contextOptions: ConversationContextOptions = {}) {}
+  private readonly sessionModels = new Map<string, ModelProvider>();
+  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter, private readonly pending: PendingApprovalProvider, private readonly policy: ToolAuthorizationPolicy, private readonly limits = { maxSteps: 8, maxToolCalls: 16 }, private readonly conversations: ConversationStore = new MemoryConversationStore(), private readonly contextOptions: ConversationContextOptions = {}, private readonly modelForSession?: (selection: ModelSelection) => ModelProvider | Promise<ModelProvider>) {}
   async *execute(command: KernelCommand, context: CommandContext = {}): AsyncIterable<KernelEvent> {
     if (command.type === "CreateSession") {
       const sessionId = command.sessionId ?? randomUUID();
       const existing = command.sessionId ? await this.conversations.getSession(command.sessionId) : undefined;
       if (command.sessionId && (!existing || existing.state !== "open")) { yield { type: "Error", error: failure("STORAGE_FAILED", `Session '${command.sessionId}' is unavailable.`).error }; return; }
-      if (!existing) await this.conversations.createSession(sessionFromBase({ schemaVersion: 1, id: sessionId, state: "open", createdAt: new Date().toISOString() }));
+      if (!existing) await this.conversations.createSession(sessionFromBase({ schemaVersion: 1, id: sessionId, state: "open", createdAt: new Date().toISOString(), ...(command.target ? { target: command.target } : {}), ...(command.model ? { model: command.model } : {}) }));
+      if (command.model && !existing && this.modelForSession) {
+        try {
+          const selectedModel = await this.modelForSession(command.model);
+          if ("health" in selectedModel && typeof selectedModel.health === "function") { const health = await selectedModel.health(); if (health.status !== "healthy") { await this.conversations.closeSession(sessionId); yield { type: "Error", error: failure("CAPABILITY_UNAVAILABLE", health.message ?? "Selected model provider is unavailable.").error }; return; } }
+          this.sessionModels.set(sessionId, selectedModel);
+        } catch (error) { yield { type: "Error", error: normalizeError(error) }; return; }
+      }
       yield { type: "SessionCreated", sessionId }; return;
     }
     if (command.type === "ResolveApproval") {
@@ -29,7 +37,7 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
     }
     const session = await this.conversations.getSession(command.sessionId);
     if (!session || session.state !== "open") { yield { type: "Error", error: failure("STORAGE_FAILED", `Session '${command.sessionId}' is unavailable.`).error }; return; }
-    if (command.type === "CloseSession") { await this.conversations.closeSession(command.sessionId); yield { type: "SessionClosed", sessionId: command.sessionId }; return; }
+    if (command.type === "CloseSession") { await this.conversations.closeSession(command.sessionId); this.sessionModels.delete(command.sessionId); yield { type: "SessionClosed", sessionId: command.sessionId }; return; }
     if (command.type === "CancelExecution") { await this.active.get(command.sessionId)?.cancel(); return; }
     if (this.active.has(command.sessionId)) { yield { type: "Error", error: failure("CAPABILITY_CONFLICT", `Session '${command.sessionId}' already has an active execution.`).error }; return; }
 
@@ -41,7 +49,7 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
     try { prepared = await this.prepareContext(command.sessionId, modelContext); }
     catch (error) { yield { type: "Error", error: normalizeError(error) }; return; }
     const approvalEvents = this.pending.subscribe();
-    const execution = new AgentOrchestrator(this.model, this.tools, this.limits, { policy: this.policy, approvalProvider: this.pending }).create(command.input, modelContext, modelFacingDescriptors(this.tools), prepared.history, prepared.control);
+    const execution = new AgentOrchestrator(this.sessionModels.get(command.sessionId) ?? this.model, this.tools, this.limits, { policy: this.policy, approvalProvider: this.pending }).create(command.input, modelContext, modelFacingDescriptors(this.tools), prepared.history, prepared.control);
     const executionId = execution.id;
     this.active.set(command.sessionId, execution);
     yield { type: "ExecutionStarted", executionId };

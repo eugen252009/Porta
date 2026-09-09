@@ -50,11 +50,11 @@ The deterministic self-qualification E2E in `tests/e2e.test.ts` drives a broken 
 
 Run `npm install`, then `npm test`, `npm run typecheck`, and `npm run build`.
 
-For a practical guide to using the CLI, TUI, and web frontend, see [docs/USAGE.md](docs/USAGE.md).
+The normal installed interface is `porta`, `porta tui`, `porta web`, `porta login ...`, and `porta doctor`. For a practical guide to using the CLI, TUI, web frontend, diagnostics, npm linking, and Mema deployment, see [docs/USAGE.md](docs/USAGE.md).
 
 ## Installation and starting Porta
 
-Porta is currently distributed as a Node.js package. Node.js 22.19 or newer is required (the OAuth dependency requires 22.19; SQLite persistence uses the built-in `node:sqlite` API). npm is the reference package manager; Yarn and Bun can install and run the same package because they consume standard npm packages. Deno is supported as an execution backend, but is not the recommended launcher for Porta itself because the CLI uses Node APIs and Ink.
+Porta is currently distributed as a Node.js package with a `porta` executable. Node.js 22.19 or newer is required (the OAuth dependency requires 22.19; SQLite persistence uses the built-in `node:sqlite` API). npm is the reference package manager; Yarn and Bun can install and run the same package because they consume standard npm packages. Deno is supported as an execution backend, but is not the recommended launcher for Porta itself because the CLI uses Node APIs and Ink.
 
 ### Start from a checkout
 

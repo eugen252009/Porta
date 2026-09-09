@@ -21,5 +21,28 @@
       "maxWriteBytes": 2097152,
       "maxPatchTargetBytes": 8388608
     }
-  }
+  },
+  "web": {
+    "targets": [
+      {
+        "id": "nas",
+        "name": "NAS",
+        "endpoint": "http://192.168.188.2:4173"
+      }
+    ],
+    "port": 4173
+  },
+  "deployment": {
+    "imageRepository": "porta",
+    "registry": "192.168.188.2:9006",
+    "target": "porta-nas"
+  },
+  "providers": [
+    {
+      "id": "workstation-llama",
+      "type": "openai-compatible",
+      "name": "Workstation llama.cpp",
+      "endpoint": "http://192.168.188.40:8080/v1"
+    }
+  ]
 }

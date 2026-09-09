@@ -1,0 +1,11 @@
+import { describe, expect, it } from "vitest";
+import { DockerImageAdapter, OneShotSshDeployment, qualifyDeployment } from "../src/deployment.js";
+import { ProcessRunResult, ProcessRunner } from "../src/process-runner.js";
+
+class FakeRunner implements ProcessRunner { readonly calls: { executable: string; args: readonly string[] }[] = []; async run(request: { executable: string; args: readonly string[] }): Promise<ProcessRunResult> { this.calls.push(request); return { status: "completed", exitCode: 0, stdout: "ok", stderr: "", stdoutTruncated: false, stderrTruncated: false }; } }
+
+describe("controlled image and deployment adapters", () => {
+  it("builds, pushes immutable and latest image references", async () => { const runner = new FakeRunner(); const adapter = new DockerImageAdapter({ workspaceRoot: "/workspace/porta", imageRepository: "porta", registry: "192.168.188.2:9006" }, runner); const built = await adapter.build("abc123", "abc123"); await adapter.push(built); expect(runner.calls.map((call) => call.args)).toEqual([["build", "--build-arg", "GIT_COMMIT=abc123", "--build-arg", "BUILD_ID=abc123", "--label", "org.opencontainers.image.revision=abc123", "-t", "192.168.188.2:9006/porta:abc123", "/workspace/porta"], ["push", "192.168.188.2:9006/porta:abc123"], ["tag", "192.168.188.2:9006/porta:abc123", "192.168.188.2:9006/porta:latest"], ["push", "192.168.188.2:9006/porta:latest"]]); });
+  it("uses exactly the one-shot NAS SSH command", async () => { const runner = new FakeRunner(); const result = await new OneShotSshDeployment({}, runner).deploy({ sourceRevision: "abc123", imageReference: "registry/porta:abc123" }); expect(runner.calls[0]?.executable).toBe("ssh"); expect(runner.calls[0]?.args).toEqual(["deploy_porta@nas"]); expect(result.status).toBe("triggered"); });
+  it("does not treat an old healthy revision as a successful deployment", async () => { const responses = [new Response(JSON.stringify({ ready: true }), { status: 200 }), new Response(JSON.stringify({ commit: "old" }), { status: 200 }), new Response(JSON.stringify({ tasks: [] }), { status: 200 })]; const health = await qualifyDeployment("http://porta.test", "new", async () => responses.shift()!); expect(health.ready).toBe(true); expect(health.correctRevision).toBe(false); expect(health.taskStateAvailable).toBe(true); });
+});

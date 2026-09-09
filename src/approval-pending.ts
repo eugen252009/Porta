@@ -7,6 +7,7 @@ export class PendingApprovalProvider implements ApprovalProvider {
   private readonly pending = new Map<string, { request: ToolApprovalRequest; resolve: (decision: ToolApprovalDecision) => void; reject: (error: HarnessFailure) => void }>();
   private readonly subscribers = new Set<AsyncQueue<PendingApprovalEvent>>();
   get pendingCount(): number { return this.pending.size; }
+  pendingRequests(): readonly ApprovalRequestedEvent[] { return [...this.pending.values()].map(({ request }) => ({ type: "ApprovalRequested", approvalId: request.approvalId, toolCallId: request.toolCallId, toolId: request.invocation.toolId, input: request.invocation.input as import("./contracts.js").JsonValue, descriptor: request.descriptor, executionId: request.context.executionId, sessionId: request.context.sessionId, traceId: request.context.traceId })); }
   async approve(request: ToolApprovalRequest): Promise<ToolApprovalDecision> {
     if (this.pending.has(request.approvalId)) throw failure("CAPABILITY_CONFLICT", `Approval '${request.approvalId}' is already pending.`);
     const promise = new Promise<ToolApprovalDecision>((resolve, reject) => { this.pending.set(request.approvalId, { request, resolve, reject }); });

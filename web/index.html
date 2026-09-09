@@ -7,16 +7,40 @@
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
+    <section id="auth-gate" hidden><h1>Secure this Porta</h1><p id="auth-message">Authenticate with your passkey to continue.</p><button id="passkey-auth" type="button">Use passkey</button></section>
     <main class="shell">
       <header class="topbar">
-        <div><strong>Porta</strong><span id="model" class="muted"></span></div>
-        <button id="new-session" class="quiet" type="button">New session</button>
+        <div class="model-control"><strong>Porta</strong><label class="muted" for="target-picker">Target</label><select id="target-picker" aria-label="Porta target"><option value="local">Local</option></select><span id="model" class="muted"></span><select id="model-picker" aria-label="Model for new sessions" disabled><option>Loading models…</option></select></div>
+        <div class="top-actions"><button id="new-session" class="quiet" type="button">New session</button><form method="post" action="/auth/logout"><button class="quiet" type="submit">Log out</button></form></div>
       </header>
-      <section id="messages" class="messages" aria-live="polite"></section>
-      <form id="composer" class="composer">
-        <textarea id="input" rows="1" placeholder="Ask Porta to inspect your workspace..." autofocus></textarea>
-        <div class="composer-footer"><span id="status" class="muted">Ready</span><button id="send" type="submit">Send</button></div>
-      </form>
+      <details class="admin-panel"><summary>Settings and administration</summary><section class="provider-panel" aria-label="Providers"><div class="section-heading"><span>Providers</span><button id="add-provider" class="quiet" type="button">+ Add</button></div><div id="provider-list" class="provider-list"><div class="empty-panel">Loading providers…</div></div></section>
+      <section class="provider-panel" aria-label="Machine Identities"><div class="section-heading"><span>Machine Identities</span></div><div id="identity-list" class="provider-list"><div class="empty-panel">Loading identities…</div></div><form id="identity-form"><label>Label<input id="identity-name" placeholder="Build server" required></label><label>Identity<input id="identity-value" placeholder="porta:ed25519:…" required></label><label>Public key<textarea id="identity-public-key" placeholder="Ed25519 public key" rows="3" required></textarea></label><button type="submit">Add identity</button></form></section></details>
+      <section class="task-list-panel" aria-label="Sessions"><div class="section-heading"><span>Sessions</span><button id="refresh-sessions" class="quiet" type="button">Refresh</button></div><div id="session-list" class="task-list"><div class="empty-panel">Loading sessions…</div></div></section>
+      <section class="task-list-panel" aria-label="Tasks"><div class="section-heading"><span>Tasks</span><button id="refresh-tasks" class="quiet" type="button">Refresh</button></div><div id="task-list" class="task-list"></div></section>
+      <nav id="workspace-tabs" class="workspace-tabs" aria-label="Workspace tabs"><button id="new-tab" class="tab-add" type="button" aria-label="New tab">+</button></nav>
+      <section class="task-header" aria-labelledby="task-title">
+        <div class="eyebrow">Execution</div>
+        <div class="task-title-row"><h1 id="task-title">No objective yet</h1><span id="status" class="status-badge">Ready</span></div>
+        <p id="task-summary" class="muted">Start a task and Porta will keep its work visible here.</p>
+        <p id="model-hint" class="muted model-hint" hidden>Selection applies to the next session.</p>
+        <div class="controls" aria-label="Execution controls"><button id="delete-task" class="quiet" type="button" disabled>Delete task</button><button id="stop" class="danger-control" type="button" disabled>Stop</button></div>
+      </section>
+      <section class="workspace">
+        <div class="execution-column">
+          <div class="section-heading"><span>Agent activity</span><span id="activity-count" class="muted"></span></div>
+          <section id="messages" class="messages" aria-live="polite"><div class="empty">Your objective, assistant output, tool calls, and approvals will appear here.</div></section>
+          <div id="quick-actions" class="quick-actions" aria-label="Quick actions" hidden></div>
+          <form id="composer" class="composer">
+            <textarea id="input" rows="1" placeholder="Describe a coding task for Porta..." autofocus></textarea>
+            <div class="composer-footer"><span id="composer-hint" class="muted">Enter sends · Shift+Enter adds a line</span><button id="send" type="submit">Send</button></div>
+          </form>
+          <div id="discussion-fallback" class="discussion-fallback" hidden>
+            <div class="section-heading"><span>Discussion context</span><button id="close-fallback" class="quiet" type="button">Close</button></div>
+            <p class="muted">Clipboard access failed. Copy this bounded snapshot manually.</p>
+            <textarea id="discussion-text" readonly rows="8"></textarea>
+          </div>
+        </div>
+      </section>
     </main>
     <script type="module" src="/app.js"></script>
   </body>

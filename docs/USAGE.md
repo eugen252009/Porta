@@ -13,7 +13,11 @@ Install dependencies from a checkout:
 
 ```bash
 npm install
+npm run build
+npm link
 ```
+
+This exposes the normal executable interface. Development scripts remain available, but are not required for normal use. A Mema-managed installation should activate Node.js 22.19+ and the installed Porta package, then expose the same `porta` command; Porta does not install Node itself.
 
 ### Ollama (default provider)
 
@@ -39,8 +43,8 @@ npm run porta
 Log in once, then start any frontend with the Codex provider:
 
 ```bash
-npm run porta -- login openai-codex
-PORTA_MODEL_PROVIDER=openai-codex PORTA_MODEL=gpt-5.3-codex npm run porta
+porta login openai-codex
+PORTA_MODEL_PROVIDER=openai-codex PORTA_MODEL=gpt-5.3-codex porta
 ```
 
 For headless environments use `--device-code` with the login command. Porta does not use an OpenAI API key for this provider.
@@ -89,16 +93,21 @@ Porta does not grant workspace access merely because a model is configured. Enab
 - `filesystem.mutation.enabled` additionally enables writes and patches.
 - `authorization.mode` can be `require-approval` or `allow-all`.
 - Command execution is separate and must be explicitly enabled with `execution.enabled` and an allowlist.
+- Bounded delegation is opt-in with `delegation.enabled`; it supports `delegation.maxDepth` and `delegation.maxChildren`. A child inherits the parent's effective permissions and may only restrict them. Child task handoff state is stored in a task-owned scratchpad namespace, so a later attempt can use another model without replaying the previous conversation.
 
 Keep the workspace root as narrow as practical. Filesystem paths are confined to that root. Mutation is disabled by default.
 
 ## 3. CLI: line-oriented terminal
 
-Start it with:
+Start the normal executable with:
 
 ```bash
-npm run porta
+porta
+porta --picker
+porta --session <session-id>
 ```
+
+The development equivalent is `npm run porta` (or `node dist/src/main.js` after building).
 
 After startup, Porta prints the configured model and the registered tool IDs. Type one message per line and press Enter. The assistant response and tool events stream below the prompt.
 
@@ -128,7 +137,7 @@ Persistence must be enabled in the configuration for a session to survive a proc
 Start the TUI with:
 
 ```bash
-npm run porta:tui
+porta tui
 ```
 
 Use the same `PORTA_CONFIG`, model environment variables, and provider setup as the CLI:
@@ -162,7 +171,7 @@ PORTA_CONFIG=porta.json npm run porta:tui -- --session <session-id>
 Start the local web server with:
 
 ```bash
-PORTA_CONFIG=porta.json npm run porta:web
+PORTA_CONFIG=porta.json porta web
 ```
 
 Open:
@@ -209,14 +218,38 @@ With `require-approval`, approve the write and read requests when prompted. Veri
 - Host-process execution is best-effort rather than a hard security sandbox; Bubblewrap is required for stronger Linux isolation when selected by policy.
 - Large outputs may be stored as artifacts. Ask the model to use bounded artifact reads or searches instead of injecting an entire large file into context.
 
-## 8. Development checks
+## 8. Controlled development tasks
 
-From the repository root:
+Tasks may optionally carry a persisted development state containing the goal, acceptance criteria, workspace, permission intent, focused/full verification commands, deployment target, phase, attention reason, changed files, verification records, commit/image metadata, and last event. Update it through the existing versioned `task/update` capability using `set_development`; the web task list exposes the phase and attention state globally.
+
+The persistent `DevelopmentRunner` advances one phase at a time through an injected normal Porta capability driver. It records a `running` marker before invoking a phase, pauses rather than repeating an interrupted side effect, and resumes only after a version-checked web intervention. Supported interventions are approve, reject, provide input, resume, and cancel. A browser disconnect does not cancel the task.
+
+This is state and intervention infrastructure, not an autonomous deployment workflow yet. Git commit/push, image build/push, and the one-shot `ssh deploy_porta@nas` adapter now exist as explicit capability seams, but are not automatically chained by the runner. The current project has no configured image repository, so live image publication and NAS qualification remain opt-in follow-up work. Do not mark a task completed without passing evidence for every required stage.
+
+## 9. Release configuration
+
+Release orchestration requires an explicit image repository; Porta never guesses one. Configure it with `deployment.imageRepository` and `deployment.registry`, or set `PORTA_IMAGE_REPOSITORY` and optionally `PORTA_IMAGE_REGISTRY` (default `192.168.188.2:9006`). The deployment target defaults to `porta-nas`. The release runner persists commit, immutable image tag, `latest` alias, deployment handoff, and replacement qualification state before invoking the one-shot SSH adapter.
+
+## 10. Diagnostics and development checks
+
+Inspect the actual executable, runtime, configuration, workspace, credentials, persistence, and packaged web assets with:
 
 ```bash
+porta doctor
+porta doctor --verbose
+porta doctor --json
+```
+
+`doctor --json` is stable machine-readable output for Mema or CI. It never prints credentials. Disabled mutation and command execution are reported as secure warnings, not failures; an invalid required configuration or unsupported Node version returns a non-zero exit code.
+
+From the repository root, run `porta doctor` before the development checks:
+
+```bash
+porta doctor
 npm test
 npm run typecheck
 npm run build
+npm pack
 ```
 
-For an already-built installation, the equivalent commands are `porta`, `porta:tui` only when exposed by the project scripts, or `node dist/src/main.js`, `node dist/src/main-tui.js`, and `node dist/src/main-web.js` respectively.
+`npm link` points `porta` at the development checkout for self-bootstrap work. A Mema installation is separate: Mema manages the Node runtime, Porta installation, version, and activation, while Porta manages configuration, providers, tools, sessions, and diagnostics.

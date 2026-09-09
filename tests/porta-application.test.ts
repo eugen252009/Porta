@@ -8,6 +8,11 @@ const config = () => parsePortaConfig({ model: { provider: "ollama", baseUrl: "h
 
 describe("Porta application composition", () => {
   it("rejects missing model configuration", () => expect(() => parsePortaConfig({ model: { provider: "ollama", baseUrl: "not-url" } })).toThrow());
+  it("registers delegation only when explicitly enabled", async () => {
+    const app = await createPortaApplication(parsePortaConfig({ ...config(), delegation: { enabled: true } }), { model: () => new MockModelProvider("ready") });
+    expect(app.toolRouter.listTools().some((tool) => tool.canonicalId === "agent/delegate")).toBe(true);
+    await app.shutdown();
+  });
   it("registers configured filesystem and scratchpad tools", async () => {
     const app = await createPortaApplication({ ...config(), filesystem: { root: "." } }, { model: () => new MockModelProvider("ready") });
     expect(app.toolRouter.listTools().map((tool) => tool.canonicalId)).toEqual(expect.arrayContaining(["filesystem/read_file", "filesystem/list_directory", "filesystem/stat", "filesystem/search", "scratchpad/read", "scratchpad/write", "scratchpad/search"])); expect(app.searchEngines.filesystem).toBeTruthy(); expect(app.searchEngines.scratchpad).toBe("linear");
@@ -22,6 +27,17 @@ describe("Porta application composition", () => {
     const enabled = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, execution: { enabled: true, allowedCommands: ["node"] } }), { model: () => new MockModelProvider("ready") }); expect(enabled.toolRouter.listTools().some((tool) => tool.canonicalId === "execution/run")).toBe(true); await enabled.shutdown();
   });
   it("keeps Git optional when disabled or unavailable", async () => { const root = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "porta-no-git-")); const app = await createPortaApplication(parsePortaConfig({ ...config(), filesystem: { root }, git: { enabled: true, executable: "/missing/git" } }), { model: () => new MockModelProvider("ready") }); expect(app.toolRouter.listTools().some((tool) => tool.canonicalId.startsWith("git/"))).toBe(false); await app.shutdown(); });
+  it("applies a selected model only to a new session", async () => {
+    const selected: string[] = [];
+    const app = await createPortaApplication(config(), { model: (model) => { selected.push(model.model); return new MockModelProvider(model.model); } });
+    const created = [...(await collect(app.gateway, { type: "CreateSession", model: { provider: "ollama", model: "next-model" } }))];
+    const sessionId = created.find((event) => event.type === "SessionCreated")!.sessionId;
+    const events = await collect(app.gateway, { type: "SubmitInput", sessionId, input: "hello" });
+    expect(selected).toEqual(["test-model", "next-model"]);
+    expect(events.some((event) => event.type === "OutputDelta" && event.text === "next-model")).toBe(true);
+    await app.shutdown();
+  });
+
   it("composes a healthy text-only application without contacting Ollama", async () => {
     const app = await createPortaApplication(config(), { model: () => new MockModelProvider("ready") });
     await app.start();
