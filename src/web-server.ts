@@ -15,6 +15,7 @@ import { WebAuthnService } from "./webauthn.js";
 import type { DevelopmentInterventionAction } from "./task.js";
 import type { DevelopmentRunner } from "./development-runner.js";
 import type { TargetRegistry } from "./target.js";
+import type { TargetInvocationService } from "./target-invocation.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
@@ -24,6 +25,7 @@ export interface WebApplication {
   tasks?: Pick<TaskStore, "delete" | "get" | "list">;
   node?: { version: string; name?: string; capabilities: readonly string[] };
   executionTargets?: TargetRegistry;
+  targetInvocations?: TargetInvocationService;
   providers?: ProviderRegistry;
   conversations?: import("./contracts.js").ConversationStore;
   pendingApprovals?: Pick<import("./approval-pending.js").PendingApprovalProvider, "pendingRequests">;
@@ -121,6 +123,9 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   if (request.method === "GET" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, { identities: application.identity.listAllowed() }); return; }
   if (request.method === "POST" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const body = await readJson(request) as { identity?: string; publicKey?: string; algorithm?: "ed25519"; displayName?: string }; if (!body.identity || !body.publicKey || body.algorithm !== "ed25519" || !body.displayName) { json(response, 400, { error: "Identity, publicKey, algorithm, and displayName are required." }); return; } application.identity.allow({ identity: body.identity, publicKey: body.publicKey, algorithm: "ed25519" }, body.displayName); json(response, 201, { created: true }); return; }
   if ((request.method === "PATCH" || request.method === "DELETE") && url.pathname.startsWith("/api/identity/allowed/")) { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const id = decodeURIComponent(url.pathname.slice("/api/identity/allowed/".length)); if (request.method === "DELETE") application.identity.remove(id); else application.identity.setEnabled(id, Boolean((await readJson(request) as { enabled?: boolean }).enabled)); json(response, 200, { updated: true }); return; }
+  if (request.method === "POST" && url.pathname === "/api/execution-invocations") { const body = await readJson(request); if (typeof body?.targetId !== "string" || typeof body.workspaceId !== "string" || typeof body.operation !== "string") { json(response, 400, { error: "targetId, workspaceId, and operation are required." }); return; } try { const evidence = application.targetInvocations?.start({ targetId: body.targetId, workspaceId: body.workspaceId, operation: body.operation as import("./target-transport.js").TargetOperation, input: body.input, ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(typeof body.deadline === "number" ? { deadline: body.deadline } : {}) }); if (!evidence) { json(response, 503, { error: "Target invocation is unavailable." }); return; } json(response, 202, evidence); } catch (error) { json(response, 400, { error: error instanceof Error ? error.message : "Target invocation failed." }); } return; }
+  if (request.method === "GET" && url.pathname.startsWith("/api/execution-invocations/")) { const id = decodeURIComponent(url.pathname.slice("/api/execution-invocations/".length)); const evidence = application.targetInvocations?.get(id); if (!evidence) { json(response, 404, { error: "Invocation was not found." }); return; } json(response, 200, evidence); return; }
+  if (request.method === "POST" && url.pathname.startsWith("/api/execution-invocations/") && url.pathname.endsWith("/cancel")) { const id = decodeURIComponent(url.pathname.slice("/api/execution-invocations/".length, -"/cancel".length)); if (!application.targetInvocations?.cancel(id)) { json(response, 404, { error: "Invocation was not found." }); return; } json(response, 202, { cancelled: true, invocationId: id }); return; }
   const targetId = url.searchParams.get("target") ?? "local";
   if (request.method === "GET" && url.pathname === "/api/targets") { json(response, 200, { targets: targets.map(({ endpoint: _endpoint, ...descriptor }) => descriptor) }); return; }
   if (request.method === "GET" && url.pathname === "/api/sessions") {
