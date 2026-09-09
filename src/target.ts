@@ -1,6 +1,7 @@
 import type { ApplicationGateway, CommandContext, KernelEvent } from "./contracts.js";
+import type { DevelopmentReleaseTarget } from "./development-runner.js";
 
-export type ExecutionTargetCapability = "filesystem.read" | "filesystem.write" | "execution.run" | "git" | "image.build" | "image.push";
+export type ExecutionTargetCapability = "filesystem.read" | "filesystem.write" | "execution.run" | "git.current_revision" | "git.status" | "git.diff" | "git.commit" | "git.push" | "image.build" | "image.push";
 
 export interface ExecutionTarget {
   readonly id: string;
@@ -10,6 +11,7 @@ export interface ExecutionTarget {
   available(): Promise<boolean>;
   /** Optional target-bound gateway. The orchestrator still owns task state and approvals. */
   gateway?: ApplicationGateway;
+  release?: DevelopmentReleaseTarget;
 }
 
 export interface TargetResolution {
