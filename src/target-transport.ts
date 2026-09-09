@@ -3,11 +3,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { InstanceIdentityStore, LoginService } from "./identity.js";
 import type { ExecutionTargetCapability } from "./target.js";
 import type { JsonValue, ToolContext, ToolProvider, ToolResult } from "./contracts.js";
+import type { GitBackend } from "./git.js";
+import type { ImageAdapter } from "./deployment.js";
 
-export type TargetOperation = "filesystem.read" | "filesystem.write" | "filesystem.delete" | "execution.run";
+export type TargetOperation = "filesystem.read" | "filesystem.write" | "filesystem.delete" | "execution.run" | "git.commit" | "git.push" | "image.build" | "image.push";
 export interface TargetDescription { readonly id: string; readonly kind: string; readonly available: boolean; readonly capabilities: readonly ExecutionTargetCapability[]; readonly workspace?: { readonly id: string; readonly path: string; readonly repository?: string }; readonly platform?: string }
 export interface TargetOperationRequest { readonly requestId: string; readonly targetId: string; readonly workspaceId: string; readonly operation: TargetOperation; readonly input: unknown; readonly deadline?: number }
-export interface TargetOperationResult { readonly requestId: string; readonly targetId: string; readonly operation: TargetOperation; readonly status: "completed" | "failed" | "cancelled" | "timed-out"; readonly output?: unknown; readonly error?: { readonly code: string; readonly message: string }; readonly startedAt: string; readonly finishedAt: string }
+export interface TargetOperationResult { readonly requestId: string; readonly targetId: string; readonly workspaceId?: string; readonly operation: TargetOperation; readonly status: "completed" | "failed" | "cancelled" | "timed-out"; readonly output?: unknown; readonly error?: { readonly code: string; readonly message: string }; readonly startedAt: string; readonly finishedAt: string }
 export interface TargetTransport { describe(signal?: AbortSignal): Promise<TargetDescription>; invoke(request: TargetOperationRequest, signal?: AbortSignal): Promise<TargetOperationResult>; cancel(requestId: string): Promise<void> }
 
 export interface TargetAuthenticator { authenticate(targetId: string, challenge: string, signature: string): Promise<boolean> }
@@ -78,11 +80,12 @@ export class AuthenticatedTargetTransport implements TargetTransport {
 /** Adapts existing Porta tool providers to the target protocol; no filesystem or runtime logic is duplicated. */
 export class ToolProviderTargetTransport implements TargetTransport {
   private readonly cancellations = new Map<string, AbortController>();
-  constructor(private readonly description: TargetDescription, private readonly providers: Readonly<{ filesystem?: ToolProvider; execution?: ToolProvider }>, private readonly deleteFile?: (path: string) => Promise<unknown>) {}
+  constructor(private readonly description: TargetDescription, private readonly providers: Readonly<{ filesystem?: ToolProvider; execution?: ToolProvider; git?: GitBackend; image?: ImageAdapter }>, private readonly deleteFile?: (path: string) => Promise<unknown>) {}
   async describe(): Promise<TargetDescription> { return this.description; }
   async invoke(request: TargetOperationRequest): Promise<TargetOperationResult> {
     const startedAt = new Date().toISOString(); const controller = new AbortController(); this.cancellations.set(request.requestId, controller);
     if (request.operation === "filesystem.delete" && this.deleteFile) { try { const output = await this.deleteFile(String((request.input as { path?: unknown }).path ?? "")); return this.result(request, "completed", startedAt, undefined, output); } catch (error) { return this.result(request, "failed", startedAt, { code: "CAPABILITY_UNAVAILABLE", message: error instanceof Error ? error.message : "Filesystem deletion failed." }); } }
+    if (["git.commit", "git.push", "image.build", "image.push"].includes(request.operation)) return this.invokeRelease(request, startedAt, controller);
     const provider = request.operation.startsWith("filesystem.") ? this.providers.filesystem : this.providers.execution;
     const toolId = request.operation === "filesystem.read" ? "read_file" : request.operation === "filesystem.write" ? "write_file" : request.operation === "execution.run" ? "run" : undefined;
     if (!provider || !toolId) return this.result(request, "failed", startedAt, { code: "CAPABILITY_UNAVAILABLE", message: "Target operation is unavailable." });
@@ -90,7 +93,20 @@ export class ToolProviderTargetTransport implements TargetTransport {
     finally { this.cancellations.delete(request.requestId); }
   }
   async cancel(requestId: string): Promise<void> { this.cancellations.get(requestId)?.abort(); }
-  private result(request: TargetOperationRequest, status: TargetOperationResult["status"], startedAt: string, error?: { readonly code: string; readonly message: string }, output?: unknown): TargetOperationResult { return { requestId: request.requestId, targetId: request.targetId, operation: request.operation, status, ...(output === undefined ? {} : { output }), ...(error ? { error } : {}), startedAt, finishedAt: new Date().toISOString() }; }
+  private async invokeRelease(request: TargetOperationRequest, startedAt: string, controller: AbortController): Promise<TargetOperationResult> {
+    try {
+      const input = request.input as Record<string, unknown>;
+      const context = { signal: controller.signal, ...(request.deadline === undefined ? {} : { deadline: request.deadline }) };
+      let output: unknown;
+      if (request.operation === "git.commit" && this.providers.git?.commit) output = await this.providers.git.commit({ message: String(input.message ?? ""), ...(typeof input.expectedRevision === "string" ? { expectedRevision: input.expectedRevision } : {}) }, context);
+      else if (request.operation === "git.push" && this.providers.git?.push) output = await this.providers.git.push(context);
+      else if (request.operation === "image.build" && this.providers.image) output = await this.providers.image.build(String(input.sourceRevision ?? ""), String(input.tag ?? ""));
+      else if (request.operation === "image.push" && this.providers.image) output = await this.providers.image.push(input as never);
+      else return this.result(request, "failed", startedAt, { code: "CAPABILITY_UNAVAILABLE", message: "Target release operation is unavailable." });
+      return this.result(request, controller.signal.aborted ? "cancelled" : "completed", startedAt, undefined, output);
+    } catch (error) { return this.result(request, controller.signal.aborted ? "cancelled" : "failed", startedAt, { code: "TARGET_RELEASE_FAILED", message: error instanceof Error ? error.message : "Target release operation failed." }); }
+  }
+  private result(request: TargetOperationRequest, status: TargetOperationResult["status"], startedAt: string, error?: { readonly code: string; readonly message: string }, output?: unknown): TargetOperationResult { return { requestId: request.requestId, targetId: request.targetId, workspaceId: request.workspaceId, operation: request.operation, status, ...(output === undefined ? {} : { output }), ...(error ? { error } : {}), startedAt, finishedAt: new Date().toISOString() }; }
 }
 
 /** Deterministic transport fixture with an independent workspace and bounded operations. */
@@ -114,7 +130,7 @@ export class InMemoryTargetTransport implements TargetTransport {
     } catch (error) { return this.result(request, "failed", startedAt, { code: "TARGET_OPERATION_FAILED", message: error instanceof Error ? error.message : "Target operation failed." }); }
   }
   async cancel(requestId: string): Promise<void> { this.cancelled.add(requestId); }
-  private result(request: TargetOperationRequest, status: TargetOperationResult["status"], startedAt: string, error?: TargetOperationResult["error"], output?: unknown): TargetOperationResult { return { requestId: request.requestId, targetId: request.targetId, operation: request.operation, status, ...(output === undefined ? {} : { output }), ...(error ? { error } : {}), startedAt, finishedAt: new Date().toISOString() }; }
+  private result(request: TargetOperationRequest, status: TargetOperationResult["status"], startedAt: string, error?: TargetOperationResult["error"], output?: unknown): TargetOperationResult { return { requestId: request.requestId, targetId: request.targetId, workspaceId: request.workspaceId, operation: request.operation, status, ...(output === undefined ? {} : { output }), ...(error ? { error } : {}), startedAt, finishedAt: new Date().toISOString() }; }
 }
 
 export function targetRequest(targetId: string, workspaceId: string, operation: TargetOperation, input: unknown, deadline?: number): TargetOperationRequest { return { requestId: randomUUID(), targetId, workspaceId, operation, input, ...(deadline === undefined ? {} : { deadline }) }; }

@@ -12,6 +12,8 @@ const worker = await startTargetWorker({
   identityDirectory: process.env.PORTA_TARGET_IDENTITY_DIR ?? `${process.env.HOME ?? process.cwd()}/.porta-target-worker`,
   allowedClientIdentities: allowed,
   allowedCommands: (process.env.PORTA_TARGET_ALLOWED_COMMANDS ?? "node,npm,git,docker").split(",").filter(Boolean),
+  imageRepository: process.env.PORTA_IMAGE_REPOSITORY ?? "porta",
+  registry: process.env.PORTA_IMAGE_REGISTRY ?? "192.168.188.2:9006",
   host: process.env.PORTA_TARGET_HOST ?? "127.0.0.1",
   port: Number(process.env.PORTA_TARGET_PORT ?? "4180"),
 });

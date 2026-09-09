@@ -35,7 +35,7 @@ import { ProviderRegistry } from "./provider-registry.js";
 import { DevelopmentReleaseCapabilities, DevelopmentRunner, DevelopmentPhaseDriver, GatewayDevelopmentPhaseDriver } from "./development-runner.js";
 import { DockerImageAdapter, OneShotSshDeployment, qualifyDeployment } from "./deployment.js";
 import { buildInfo } from "./build-info.js";
-import { RemoteExecutionTarget, TargetRegistry } from "./target.js";
+import { RemoteExecutionTarget, RemoteDevelopmentReleaseTarget, TargetRegistry } from "./target.js";
 import { HttpTargetTransport } from "./target-transport.js";
 import { InstanceIdentityStore } from "./identity.js";
 import { TargetInvocationService } from "./target-invocation.js";
@@ -85,7 +85,11 @@ export async function createPortaApplication(config: PortaConfig, factories: Por
 function configuredExecutionTargets(config: PortaConfig): TargetRegistry {
   const registry = new TargetRegistry(); if (!config.executionTargets?.length) return registry;
   const identity = new InstanceIdentityStore(process.env.PORTA_DATA_DIR ?? ".porta");
-  for (const target of config.executionTargets) registry.register(new RemoteExecutionTarget(target.id, target.kind, new HttpTargetTransport({ endpoint: target.endpoint, clientIdentity: identity }), target.workspaceId));
+  for (const target of config.executionTargets) {
+    const remote = new RemoteExecutionTarget(target.id, target.kind, new HttpTargetTransport({ endpoint: target.endpoint, clientIdentity: identity }), target.workspaceId);
+    if (config.deployment) remote.release = new RemoteDevelopmentReleaseTarget(remote, config.deployment.imageRepository, config.deployment.registry);
+    registry.register(remote);
+  }
   return registry;
 }
 
