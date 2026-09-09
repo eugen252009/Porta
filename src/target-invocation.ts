@@ -11,10 +11,10 @@ export class TargetInvocationService {
   private readonly records = new Map<string, { evidence: TargetInvocationEvidence; cancel: () => void }>();
   constructor(private readonly targets: TargetRegistry, private readonly policy: ToolAuthorizationPolicy, private readonly approvals: ApprovalProvider) {}
   start(request: TargetInvocationRequest): TargetInvocationEvidence {
-    const invocationId = randomUUID(); const startedAt = new Date().toISOString(); const controller = new AbortController(); const capability = capabilityFor(request.operation); const target = this.targets.resolve(request.targetId);
+    const invocationId = randomUUID(); const startedAt = new Date().toISOString(); const controller = new AbortController(); const capability = capabilityFor(request.operation); const target = this.targets.resolve(request.targetId); let cancellationRequested = false;
     const initial: TargetInvocationEvidence = { invocationId, targetId: request.targetId, workspaceId: request.workspaceId, capability, operation: request.operation, status: "pending", startedAt };
-    this.records.set(invocationId, { evidence: initial, cancel: () => { controller.abort(); void target?.transport?.cancel(invocationId); } });
-    void this.execute(invocationId, request, controller, initial).catch((error) => this.finish(invocationId, { status: "failed", error: normalizeError(error) }));
+    this.records.set(invocationId, { evidence: initial, cancel: () => { cancellationRequested = true; controller.abort(); void target?.transport?.cancel(invocationId); } });
+    void this.execute(invocationId, request, controller, initial).catch((error) => this.finish(invocationId, { status: cancellationRequested ? "cancelled" : "failed", ...(cancellationRequested ? {} : { error: normalizeError(error) }) }));
     return initial;
   }
   get(invocationId: string): TargetInvocationEvidence | undefined { return this.records.get(invocationId)?.evidence; }

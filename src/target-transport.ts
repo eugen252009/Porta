@@ -23,7 +23,8 @@ export class HttpTargetTransport implements TargetTransport {
   private async request<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, authenticated: boolean): Promise<T> {
     if (authenticated && !this.token) await this.authenticate(signal);
     const headers: Record<string, string> = { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...(authenticated && this.token ? { authorization: `Bearer ${this.token}` } : {}) };
-    const response = await (this.options.fetcher ?? fetch)(new URL(path, this.options.endpoint), { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal });
+    let response = await (this.options.fetcher ?? fetch)(new URL(path, this.options.endpoint), { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal });
+    if (response.status === 401 && authenticated && this.token) { this.token = undefined; await this.authenticate(signal); response = await (this.options.fetcher ?? fetch)(new URL(path, this.options.endpoint), { method, headers: { ...headers, authorization: `Bearer ${this.token}` }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal }); }
     const payload = await response.json() as T & { error?: string };
     if (!response.ok) throw new Error(payload.error ?? `Target transport returned HTTP ${response.status}.`);
     return payload;
