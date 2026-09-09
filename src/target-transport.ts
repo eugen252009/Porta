@@ -77,10 +77,11 @@ export class AuthenticatedTargetTransport implements TargetTransport {
 /** Adapts existing Porta tool providers to the target protocol; no filesystem or runtime logic is duplicated. */
 export class ToolProviderTargetTransport implements TargetTransport {
   private readonly cancellations = new Map<string, AbortController>();
-  constructor(private readonly description: TargetDescription, private readonly providers: Readonly<{ filesystem?: ToolProvider; execution?: ToolProvider }>) {}
+  constructor(private readonly description: TargetDescription, private readonly providers: Readonly<{ filesystem?: ToolProvider; execution?: ToolProvider }>, private readonly deleteFile?: (path: string) => Promise<unknown>) {}
   async describe(): Promise<TargetDescription> { return this.description; }
   async invoke(request: TargetOperationRequest): Promise<TargetOperationResult> {
     const startedAt = new Date().toISOString(); const controller = new AbortController(); this.cancellations.set(request.requestId, controller);
+    if (request.operation === "filesystem.delete" && this.deleteFile) { try { const output = await this.deleteFile(String((request.input as { path?: unknown }).path ?? "")); return this.result(request, "completed", startedAt, undefined, output); } catch (error) { return this.result(request, "failed", startedAt, { code: "CAPABILITY_UNAVAILABLE", message: error instanceof Error ? error.message : "Filesystem deletion failed." }); } }
     const provider = request.operation.startsWith("filesystem.") ? this.providers.filesystem : this.providers.execution;
     const toolId = request.operation === "filesystem.read" ? "read_file" : request.operation === "filesystem.write" ? "write_file" : request.operation === "execution.run" ? "run" : undefined;
     if (!provider || !toolId) return this.result(request, "failed", startedAt, { code: "CAPABILITY_UNAVAILABLE", message: "Target operation is unavailable." });

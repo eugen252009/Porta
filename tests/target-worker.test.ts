@@ -15,6 +15,7 @@ describe("target worker composition", () => {
       const target = new RemoteExecutionTarget("pc-main", "development-pc", new HttpTargetTransport({ endpoint: `http://${worker.address.host}:${worker.address.port}`, clientIdentity: client }));
       expect(await target.available()).toBe(true); expect((await target.invoke("filesystem.read", { path: "package.json" })).output).toMatchObject({ content: "target workspace\n" });
       expect((await target.invoke("filesystem.write", { path: ".porta-target-qualification.txt", content: "ok", mode: "create" })).status).toBe("completed");
+      expect((await target.invoke("filesystem.delete", { path: ".porta-target-qualification.txt" })).status).toBe("completed");
       expect((await target.invoke("execution.run", { command: "node", args: ["--version"] })).status).toBe("completed");
     } finally { await worker.close(); rmSync(root, { recursive: true, force: true }); rmSync(clientDir, { recursive: true, force: true }); rmSync(serverDir, { recursive: true, force: true }); }
   });
