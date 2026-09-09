@@ -1,8 +1,9 @@
 import { ApplicationGateway, KernelEvent, failure } from "./contracts.js";
 import { DevelopmentExecutionCategory, DevelopmentInterventionAction, DevelopmentPhase, DevelopmentState, Task, TaskStore } from "./task.js";
 import { AttentionReason } from "./attention.js";
+import { ExecutionTarget, TargetRegistry, ExecutionTargetCapability } from "./target.js";
 
-export interface DevelopmentPhaseContext { readonly task: Task; readonly state: DevelopmentState; readonly input?: string }
+export interface DevelopmentPhaseContext { readonly task: Task; readonly state: DevelopmentState; readonly input?: string; readonly target?: ExecutionTarget }
 export type DevelopmentPhaseResult =
   | { readonly type: "advance"; readonly phase: DevelopmentPhase; readonly patch?: Partial<DevelopmentState>; readonly event?: string }
   | { readonly type: "attention"; readonly reason: AttentionReason; readonly message: string; readonly action?: DevelopmentInterventionAction; readonly event?: string };
@@ -13,9 +14,10 @@ export interface DevelopmentPhaseDriver { run(context: DevelopmentPhaseContext):
 export class GatewayDevelopmentPhaseDriver implements DevelopmentPhaseDriver {
   constructor(private readonly gateway: ApplicationGateway) {}
   async run(context: DevelopmentPhaseContext): Promise<DevelopmentPhaseResult> {
-    for await (const event of this.gateway.execute({ type: "SubmitInput", sessionId: context.task.sessionId, input: phasePrompt(context) }, {})) {
+    const gateway = context.target?.gateway ?? this.gateway;
+    for await (const event of gateway.execute({ type: "SubmitInput", sessionId: context.task.sessionId, input: phasePrompt(context) }, {})) {
       if (event.type === "ApprovalRequested") {
-        void drain(this.gateway.execute({ type: "CancelExecution", sessionId: context.task.sessionId }, {}));
+        void drain(gateway.execute({ type: "CancelExecution", sessionId: context.task.sessionId }, {}));
         return { type: "attention", reason: "approval_required", message: `Approval is required for ${event.toolId}.`, action: "approve" };
       }
       if (event.type === "Error") return { type: "attention", reason: "execution_failed", message: event.error.message, action: "resume" };
@@ -25,6 +27,12 @@ export class GatewayDevelopmentPhaseDriver implements DevelopmentPhaseDriver {
 }
 function phasePrompt(context: DevelopmentPhaseContext): string { const state = context.state; const commands = state.phase === "verifying_focused" ? state.focusedCommands : state.phase === "verifying_full" ? state.fullCommands : []; return `You are operating one bounded phase of a persisted Porta development task. Do not claim completion without evidence.\nPhase: ${state.phase}\nGoal: ${state.goal}\nAcceptance criteria: ${state.acceptance?.map((entry) => `${entry.id}: ${entry.description} (${entry.status})`).join("; ") ?? state.acceptanceCriteria.join("; ")}\nWorkspace: ${state.workspace.path}\n${commands.length ? `Run these verification commands through the existing execution capability: ${commands.join(" && ")}` : "Use the existing filesystem, git, task, and artifact capabilities appropriate to this phase."}\nUpdate task state and evidence as needed. ${context.input ? `Human input: ${context.input}` : ""}`; }
 function finishRecord(records: DevelopmentState["executionRecords"], id: string, status: "passed" | "failed", finishedAt: string, summary?: string): DevelopmentState["executionRecords"] { return (records ?? []).map((record) => record.id === id ? { ...record, status, finishedAt, ...(summary ? { output: { summary } } : {}) } : record); }
+function requiredCapability(phase: DevelopmentPhase): ExecutionTargetCapability | undefined {
+  if (["inspecting", "planning"].includes(phase)) return "filesystem.read";
+  if (phase === "implementing") return "filesystem.write";
+  if (["verifying", "verifying_focused", "verifying_full"].includes(phase)) return "execution.run";
+  return undefined;
+}
 function nextPhase(phase: DevelopmentPhase): DevelopmentPhase { if (phase === "queued") return "inspecting"; if (phase === "inspecting") return "planning"; if (phase === "planning") return "implementing"; if (phase === "implementing") return "verifying_focused"; if (phase === "verifying_focused") return "verifying_full"; if (phase === "verifying_full") return "reviewing_diff"; if (phase === "reviewing_diff") return "ready_for_commit"; return phase; }
 async function drain(source: AsyncIterable<KernelEvent>): Promise<void> { for await (const _event of source) {} }
 export interface DevelopmentReleaseCapabilities {
@@ -36,7 +44,7 @@ export interface DevelopmentReleaseCapabilities {
   qualify(input: { readonly sessionId: string; readonly taskId: string; readonly deploymentId: string; readonly expectedRevision: string }): Promise<{ readonly ready: boolean; readonly correctRevision: boolean; readonly taskStateAvailable: boolean; readonly observedRevision?: string; readonly message?: string }>;
 }
 export interface DevelopmentLocalQualification { qualify(input: { readonly sessionId: string; readonly taskId: string; readonly deploymentId: string; readonly expectedRevision: string }): Promise<{ readonly ready: boolean; readonly correctRevision: boolean; readonly taskStateAvailable: boolean; readonly observedRevision?: string; readonly message?: string }> }
-export interface DevelopmentRunnerOptions { readonly maxTransitions?: number; readonly now?: () => string; readonly release?: DevelopmentReleaseCapabilities; readonly localQualification?: DevelopmentLocalQualification }
+export interface DevelopmentRunnerOptions { readonly maxTransitions?: number; readonly now?: () => string; readonly release?: DevelopmentReleaseCapabilities; readonly localQualification?: DevelopmentLocalQualification; readonly targets?: TargetRegistry }
 
 /**
  * Persistent, phase-oriented workflow coordinator. The driver performs work
@@ -49,11 +57,13 @@ export class DevelopmentRunner {
   private readonly now: () => string;
   private readonly releaseCapabilities?: DevelopmentReleaseCapabilities;
   private readonly localQualification?: DevelopmentLocalQualification;
+  private readonly targets?: TargetRegistry;
   constructor(private readonly tasks: TaskStore, private readonly driver: DevelopmentPhaseDriver, options: DevelopmentRunnerOptions = {}) {
     this.maxTransitions = options.maxTransitions ?? 16;
     this.now = options.now ?? (() => new Date().toISOString());
     this.releaseCapabilities = options.release;
     this.localQualification = options.localQualification;
+    this.targets = options.targets;
   }
 
   async wake(sessionId: string): Promise<Task | undefined> {
@@ -142,6 +152,8 @@ export class DevelopmentRunner {
       const state = this.requireState(task);
       if (state.phase === "ready_for_commit" || state.phase === "completed" || state.phase === "failed" || state.phase === "blocked" || state.attention || state.pendingIntervention) return task;
       if (state.execution?.status === "running") return this.pauseInterrupted(task, "A phase was interrupted before its result was persisted.");
+      const targetResult = await this.resolveTarget(task, state.phase);
+      if (targetResult.error) return this.pause(task, "target_unavailable", targetResult.error);
       const startedAt = this.now();
       const recordId = `execution-${task.id}-${(state.execution?.attempt ?? 0) + 1}`;
       const recordCategory = state.phase === "verifying_focused" || state.phase === "verifying_full" ? "verification" as const : "development" as const;
@@ -149,7 +161,7 @@ export class DevelopmentRunner {
       const running: DevelopmentState = { ...state, executionRecords: [...(state.executionRecords ?? []), record], execution: { phase: state.phase, status: "running", attempt: (state.execution?.attempt ?? 0) + 1, startedAt }, lastEvent: `Started ${state.phase}.`, updatedAt: startedAt };
       task = await this.tasks.update(sessionId, task.id, task.version, { type: "set_development", development: running });
       let result: DevelopmentPhaseResult;
-      try { result = await this.driver.run({ task, state: running, ...(running.interventionInput ? { input: running.interventionInput } : {}) }); }
+      try { result = await this.driver.run({ task, state: running, ...(running.interventionInput ? { input: running.interventionInput } : {}), ...(targetResult.target ? { target: targetResult.target } : {}) }); }
       catch (error) { return this.pauseFailure(task, error instanceof Error ? error.message : "Development phase failed."); }
       const finishedAt = this.now();
       if (result.type === "attention") {
@@ -168,6 +180,17 @@ export class DevelopmentRunner {
       task = await this.tasks.update(sessionId, task.id, task.version, { type: "set_development", development: next });
     }
     return this.pauseFailure(task, "Development transition limit exceeded.");
+  }
+
+  private async resolveTarget(task: Task, phase: DevelopmentPhase): Promise<{ readonly target?: ExecutionTarget; readonly error?: string }> {
+    const targetId = this.requireState(task).developmentTargetId;
+    if (!targetId) return {};
+    if (!this.targets) return { error: `Development target '${targetId}' is not configured.` };
+    const resolved = await this.targets.qualify(targetId);
+    if (!resolved) return { error: `Development target '${targetId}' is unavailable.` };
+    const required = requiredCapability(phase);
+    if (required && !resolved.capabilities.includes(required)) return { error: `Development target '${targetId}' lacks capability '${required}'.` };
+    return { target: resolved.target };
   }
 
   private async pauseInterrupted(task: Task, message: string): Promise<Task> {
