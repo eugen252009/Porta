@@ -2,15 +2,17 @@ import { randomUUID } from "node:crypto";
 import type { TargetInvocationEvidence, TargetInvocationService } from "./target-invocation.js";
 import type { DevelopmentState, Task, TaskStore } from "./task.js";
 import type { TargetRegistry } from "./target.js";
+import type { ConversationStore } from "./contracts.js";
+import { sessionFromBase } from "./conversation.js";
 
 /** Bounded, model-independent lifecycle fixture for target reconnect qualification. */
 export class DevelopmentTaskQualificationService {
   private readonly active = new Set<string>();
-  constructor(private readonly tasks: TaskStore, private readonly invocations: TargetInvocationService, private readonly targets: TargetRegistry) {}
+  constructor(private readonly tasks: TaskStore, private readonly invocations: TargetInvocationService, private readonly targets: TargetRegistry, private readonly conversations?: ConversationStore) {}
   async create(targetId: string): Promise<Task> {
     if (targetId !== "pc-main") throw new Error("Qualification target is fixed to the configured pc-main fixture.");
     const target = this.targets.resolve(targetId); if (!target || !(await target.available()) || !target.workspace) throw new Error("Qualification target is unavailable.");
-    const sessionId = `qualification-${randomUUID()}`; const now = new Date().toISOString();
+    const sessionId = `qualification-${randomUUID()}`; const now = new Date().toISOString(); if (this.conversations) await this.conversations.createSession(sessionFromBase({ schemaVersion: 1, id: sessionId, state: "open", createdAt: now }));
     const development: DevelopmentState = { goal: "Qualify persistent remote target reconnect", acceptanceCriteria: ["harmless remote execution succeeds"], developmentTargetId: targetId, workspace: { id: target.workspace.id, path: target.workspace.path }, permissions: { mutate: false, commit: false, push: false, deploy: false }, focusedCommands: ["node --version"], fullCommands: ["node --version"], phase: "verifying_focused", updatedAt: now };
     const task = await this.tasks.create(sessionId, "Qualify persistent pc-main target reconnect", ["Disposable qualification only; do not modify source."], development);
     return this.tasks.update(sessionId, task.id, task.version, { type: "add_criterion", criterionId: "remote-execution", description: "Harmless node version execution succeeds on pc-main", required: true });
