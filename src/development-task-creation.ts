@@ -46,6 +46,11 @@ export class DevelopmentTaskCreationService {
     };
     return this.tasks.create(sessionId, spec.goal, spec.constraints ?? [], development);
   }
+  async cancel(taskId: string): Promise<Task> {
+    const task = (await this.tasks.list()).find((entry) => entry.id === taskId);
+    if (!task || !task.development) throw new Error("Development task was not found.");
+    return this.tasks.update(task.sessionId, task.id, task.version, { type: "set_status", status: "cancelled", reason: "cancelled_by_operator" });
+  }
 }
 
 function validateSpec(spec: DevelopmentTaskCreationSpec): void {
