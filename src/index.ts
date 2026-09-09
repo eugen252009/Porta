@@ -45,6 +45,7 @@ export * from "./task-persistence-qualification.js";
 export * from "./development-runner.js";
 export * from "./target.js";
 export * from "./target-transport.js";
+export * from "./target-worker.js";
 export * from "./deployment.js";
 export * from "./attention.js";
 export * from "./process-runner.js";

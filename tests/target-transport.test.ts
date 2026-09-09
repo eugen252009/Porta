@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryTargetTransport, AuthenticatedTargetTransport, targetRequest } from "../src/target-transport.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { InMemoryTargetTransport, AuthenticatedTargetTransport, HttpTargetTransport, createTargetTransportServer, targetRequest } from "../src/target-transport.js";
+import { InstanceIdentityStore } from "../src/identity.js";
 import { RemoteExecutionTarget } from "../src/target.js";
 
 describe("remote execution target transport", () => {
@@ -18,6 +22,16 @@ describe("remote execution target transport", () => {
     expect((await target.invoke("filesystem.delete", { path: ".porta-target-qualification/test.txt" })).status).toBe("completed");
     expect((await target.invoke("execution.run", { command: "pwd" })).output).toMatchObject({ cwd: "/independent/pc/workspace" });
     expect(authCalls).toBe(1);
+  });
+
+  it("uses the real HTTP transport with Ed25519 challenge authentication", async () => {
+    const serverDir = mkdtempSync(join(tmpdir(), "porta-target-server-")); const clientDir = mkdtempSync(join(tmpdir(), "porta-target-client-"));
+    const serverIdentity = new InstanceIdentityStore(serverDir); const clientIdentity = new InstanceIdentityStore(clientDir); const operations = new InMemoryTargetTransport(description, { "package.json": "network-target" });
+    const server = createTargetTransportServer({ target: description, identity: serverIdentity, operations, allowedIdentities: [clientIdentity.public] }); const address = await server.listen();
+    try {
+      const transport = new HttpTargetTransport({ endpoint: `http://${address.host}:${address.port}`, clientIdentity }); const target = new RemoteExecutionTarget("pc-test", "test", transport);
+      expect(await target.available()).toBe(true); expect((await target.invoke("filesystem.read", { path: "package.json" })).output).toMatchObject({ content: "network-target" });
+    } finally { await server.close(); rmSync(serverDir, { recursive: true, force: true }); rmSync(clientDir, { recursive: true, force: true }); }
   });
 
   it("rejects outside-root paths and unsupported commands", async () => {
