@@ -25,6 +25,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "porta": "npm run build && node dist/src/main.js",
     "start": "node dist/src/main.js",
+    "target-worker": "npm run build && node dist/src/main-target-worker.js",
     "doctor": "npm run build && node dist/src/main.js doctor",
     "harness": "npm run porta",
     "porta:tui": "npm run build && node dist/src/main-tui.js",
