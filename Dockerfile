@@ -18,15 +18,43 @@ ARG GIT_COMMIT
 ARG BUILD_ID
 ARG BUILD_DIRTY
 ARG BUILT_AT
-ENV PORTA_CONFIG=/config/porta.json PORTA_DATA_DIR=/data PORTA_WEB_PORT=4173 PORTA_VERSION=$PORTA_VERSION PORTA_GIT_COMMIT=$GIT_COMMIT PORTA_BUILD_ID=$BUILD_ID PORTA_BUILD_DIRTY=$BUILD_DIRTY PORTA_BUILT_AT=$BUILT_AT
+ENV PORTA_CONFIG=/config/porta.json \
+    PORTA_DATA_DIR=/data \
+    PORTA_WEB_PORT=4173 \
+    PORTA_VERSION=$PORTA_VERSION \
+    PORTA_GIT_COMMIT=$GIT_COMMIT \
+    PORTA_BUILD_ID=$BUILD_ID \
+    PORTA_BUILD_DIRTY=$BUILD_DIRTY \
+    PORTA_BUILT_AT=$BUILT_AT
+
+# Runtime tools are intentionally limited to the requested development stack.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      openssh-client \
+      build-essential \
+      pkg-config \
+      python3 \
+      python3-pip \
+      golang \
+      rustc \
+      cargo \
+      bubblewrap \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --create-home --uid 10001 --shell /bin/sh porta \
+ && mkdir -p /app /config /data /workspace \
+ && chown -R porta:porta /app /config /data /workspace
+
 WORKDIR /app
 COPY --from=build /src/package.json /src/package-lock.json ./
 COPY --from=build /src/node_modules ./node_modules
 COPY --from=build /src/dist ./dist
 COPY --from=build /src/web ./web
-RUN useradd --create-home --uid 10001 porta && mkdir -p /config /data /workspaces && chown -R porta:porta /app /config /data /workspaces
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 4173
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD node -e "fetch('http://127.0.0.1:4173/ready').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

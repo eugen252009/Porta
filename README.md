@@ -79,6 +79,18 @@ PORTA_CONFIG=porta.json npm run porta
 
 The browser frontend starts with `PORTA_CONFIG=porta.json npm run porta:web` and listens on `http://127.0.0.1:4173`. To resume a persisted session, enable SQLite persistence in the configuration and use `PORTA_SESSION=<id>` or `npm run porta -- --session <id>`.
 
+### Docker development node
+
+A persistent non-root Docker development node is provided for local use:
+
+```bash
+docker compose build
+docker compose up -d
+curl http://127.0.0.1:4173/ready
+```
+
+It mounts `./porta.json` read-only at `/config/porta.json`, persists Porta state in the `porta-data` volume at `/data`, and persists repositories in `porta-workspace` at `/workspace`. Container configuration paths must use `/workspace` and `/data`; see [`docs/DOCKER-DEVELOPMENT.md`](docs/DOCKER-DEVELOPMENT.md). The default Web/API publication is localhost-only on port `4173`; do not expose it publicly.
+
 ### Codex subscription login
 
 Sign in explicitly using an eligible ChatGPT account with Codex access:

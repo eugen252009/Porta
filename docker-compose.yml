@@ -1,11 +1,26 @@
 services:
   porta:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
+    init: true
+    environment:
+      PORTA_CONFIG: /config/porta.json
+      PORTA_DATA_DIR: /data
+      PORTA_WEB_PORT: 4173
     ports:
-      - "4173:4173"
+      # Keep the development node local by default. Use 4173:4173 for a trusted LAN.
+      - "127.0.0.1:4173:4173"
     volumes:
-      - ./config:/config
-      - ./data:/data
-      # Add explicit workspace mounts only when required.
-      # - ./workspaces:/workspaces
+      # Host configuration is intentionally read-only.
+      - ./porta.json:/config/porta.json:ro
+      - porta-data:/data
+      - porta-workspace:/workspace
+      # Compatibility alias for the repository's current host-specific porta.json
+      # (filesystem.root=/home/eugen/projekte/Porta). Remove when using /workspace.
+      - porta-workspace:/home/eugen/projekte/Porta
+
+volumes:
+  porta-data:
+  porta-workspace:
