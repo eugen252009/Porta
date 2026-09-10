@@ -16,14 +16,15 @@ node --input-type=module -e 'import { IntegrationCredentialStore } from "./dist/
 Save the one-time token privately for the extension options page. Then start Porta:
 
 ```bash
+export PORTA_WEB_PORT=4178
 export PORTA_EXTENSION_ORIGINS=chrome-extension://<extension-id>
 npm run porta:web
 ```
 
-The local endpoint is:
+The canonical local qualification endpoint is:
 
 ```text
-http://localhost:4173
+http://localhost:4178
 ```
 
 The current `porta.json` NAS endpoint is `http://192.168.188.2:4173`; it is not suitable for the hardened extension because non-local HTTP is rejected. Use an HTTPS deployment for a real remote endpoint.
@@ -45,7 +46,7 @@ The token is displayed once for entry in the extension options page. Revoke it a
 6. Note the generated extension ID.
 7. Restart Porta with `PORTA_EXTENSION_ORIGINS` set to `chrome-extension://<extension-id>`.
 8. Open the extension options.
-9. Set `http://localhost:4173` and the temporary token.
+9. Set `http://localhost:4178` and the temporary token.
 10. Grant the requested localhost host permission.
 11. Save and reload ChatGPT.
 
