@@ -11,22 +11,32 @@
 
   function text(node) { return (node.textContent || "").trim(); }
   function isNativeCopyButton(button) { const label = button.getAttribute("aria-label")?.trim().toLocaleLowerCase(); return label === "copy" || label === "kopieren"; }
+  function isOpenEditorButton(button) { const label = button.getAttribute("aria-label")?.trim().toLocaleLowerCase(); return label === "editor öffnen" || label === "open editor"; }
   function isAssistantCandidate(node) { return node instanceof Element && (node.matches('[data-message-author-role="assistant"]') || /assistant/i.test(node.getAttribute("data-message-author-role") || node.getAttribute("data-testid") || "")); }
   function assistantRoot(node) { const element = node instanceof Element ? node : node.parentElement; if (!element) return undefined; if (isAssistantCandidate(element)) return element; const closest = element.closest(ASSISTANT_SELECTORS); return closest && isAssistantCandidate(closest) ? closest : undefined; }
   function extensionOwned(node) { const element = node instanceof Element ? node : node.parentElement; return Boolean(element?.closest(`[${MARKER}]`)); }
   function artifactRoots(scope) { const roots = []; if (scope.matches?.(ARTIFACT_SELECTORS)) roots.push(scope); roots.push(...scope.querySelectorAll(ARTIFACT_SELECTORS)); return [...new Set(roots)].filter((root) => !extensionOwned(root)); }
-  function findArtifactForCopyButton(copyButton) {
+  function findCodeArtifactForCopyButton(copyButton) {
     let ancestor = copyButton.parentElement;
-    for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) { const roots = artifactRoots(ancestor).filter((root) => text(root)); if (roots.length === 1) return roots[0]; if (isAssistantCandidate(ancestor)) break; }
+    for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) { if (hasOpenEditorAction(ancestor)) { if (isAssistantCandidate(ancestor)) break; continue; } const roots = artifactRoots(ancestor).filter((root) => text(root)); if (roots.length === 1) return { type: "code", root: roots[0], source: roots[0] }; if (isAssistantCandidate(ancestor)) break; }
     return null;
   }
-  function copyButtons(scope) { const buttons = []; if (scope.matches?.(COPY_BUTTON_SELECTOR)) buttons.push(scope); buttons.push(...scope.querySelectorAll(COPY_BUTTON_SELECTOR)); return [...new Set(buttons)].filter(isNativeCopyButton); }
-  function extractArtifactMarkdown(artifact) { const code = artifact.matches("pre") ? artifact.querySelector("code") : artifact.querySelector("pre code, code"); return (code ? code.textContent : artifact.textContent)?.trim() || ""; }
+  function findMarkdownEditorArtifactForCopyButton(copyButton) {
+    const hasContent = (source) => source instanceof HTMLTextAreaElement ? Boolean(source.value.trim()) : Boolean(text(source));
+    let ancestor = copyButton.parentElement;
+    for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) { if (!copyButtons(ancestor).some(isOpenEditorButton)) { if (isAssistantCandidate(ancestor)) break; continue; } const sources = []; if (ancestor.matches?.("textarea, [contenteditable=true], pre, [data-testid=code-block]")) sources.push(ancestor); sources.push(...ancestor.querySelectorAll("textarea, [contenteditable=true], pre, [data-testid=code-block]")); const unique = [...new Set(sources)].filter((source) => !extensionOwned(source) && hasContent(source)); if (unique.length === 1) return { type: "markdown-editor", root: ancestor, source: unique[0] }; if (isAssistantCandidate(ancestor)) break; }
+    return null;
+  }
+  function findArtifactForCopyButton(copyButton) { return findMarkdownEditorArtifactForCopyButton(copyButton) || findCodeArtifactForCopyButton(copyButton); }
+  function actionButtons(scope) { const buttons = []; if (scope.matches?.(COPY_BUTTON_SELECTOR)) buttons.push(scope); buttons.push(...scope.querySelectorAll(COPY_BUTTON_SELECTOR)); return [...new Set(buttons)]; }
+  function copyButtons(scope) { return actionButtons(scope).filter(isNativeCopyButton); }
+  function hasOpenEditorAction(scope) { return actionButtons(scope).some(isOpenEditorButton); }
+  function extractArtifactMarkdown(artifact) { if (artifact.type === "markdown-editor") { const source = artifact.source; const value = source instanceof HTMLTextAreaElement ? source.value : source.textContent; return value?.trim() || ""; } const code = artifact.source.matches("pre") ? artifact.source.querySelector("code") : artifact.source.querySelector("pre code, code"); return (code ? code.textContent : artifact.source.textContent)?.trim() || ""; }
   function conversationIdentity() { const match = location.pathname.match(/^\/c\/([^/]+)/); return match?.[1] || `temporary:${location.origin}${location.pathname}`; }
   function setStatus(container, message) { container.querySelector(".porta-extension-status")?.remove(); if (!message) return; const status = document.createElement("span"); status.className = "porta-extension-status"; status.textContent = message; container.append(status); }
   async function submitArtifact(container, artifact, node, newSession) {
     setStatus(container, newSession ? "Starting…" : "Sending…");
-    try { const content = extractArtifactMarkdown(artifact); if (!content) throw new Error("No standalone artifact content found."); const key = newSession ? crypto.randomUUID() : artifact.dataset.portaIdempotency || (artifact.dataset.portaIdempotency = crypto.randomUUID()); const accepted = await window.PortaExtensionClient.submit(content, node.id, key, conversationIdentity(), newSession); setStatus(container, `✓ Sent to ${accepted.nodeId}${accepted.reused ? " (continued)" : ""}`); } catch (error) { setStatus(container, error instanceof Error ? error.message : "Porta submission failed."); }
+    try { const content = extractArtifactMarkdown(artifact); if (!content) throw new Error("No standalone artifact content found."); const key = newSession ? crypto.randomUUID() : artifact.root.dataset.portaIdempotency || (artifact.root.dataset.portaIdempotency = crypto.randomUUID()); const accepted = await window.PortaExtensionClient.submit(content, node.id, key, conversationIdentity(), newSession); setStatus(container, `✓ Sent to ${accepted.nodeId}${accepted.reused ? " (continued)" : ""}`); } catch (error) { setStatus(container, error instanceof Error ? error.message : "Porta submission failed."); }
   }
   async function showTargets(container, artifact) {
     const menu = document.createElement("div"); menu.className = "porta-extension-menu"; menu.textContent = "Loading nodes…"; container.append(menu);
