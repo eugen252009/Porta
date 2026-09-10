@@ -4,6 +4,7 @@ import { createTargetTransportServer, type TargetTransportServerOptions } from "
 import { parsePortaConfig, type PortaConfig } from "./porta-config.js";
 import type { PairingSession } from "./target-pairing.js";
 import { NodeDelegationService } from "./node-delegation.js";
+import { createNodeApplicationProtocol } from "./remote-application.js";
 
 export interface PortaNodeTargetOptions extends PortaTargetCapabilityOptions {
   readonly identityDirectory: string;
@@ -51,6 +52,7 @@ export async function createPortaNode(config: PortaConfig, options: PortaNodeOpt
       ...(target.allowedClientIdentities ? { allowedIdentities: target.allowedClientIdentities } : {}),
       ...(target.pairing ? { pairing: target.pairing } : {}),
       ...(delegation ? { delegation } : {}),
+      application: createNodeApplicationProtocol(application),
     };
     targetServer = createTargetTransportServer(serverOptions);
   }

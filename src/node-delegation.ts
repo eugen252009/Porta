@@ -1,7 +1,8 @@
 import { permissionsForTools, type DelegatedResult, type DelegatedTask, type DelegationRequest, type DelegatedTaskStatus, type DelegatedTaskStore } from "./delegation.js";
 import type { ApprovalProvider, ModelProvider, ToolAuthorizationPolicy } from "./contracts.js";
 import type { ToolRouter } from "./tools.js";
-import type { DelegatedTaskAccepted, DelegatedTaskProtocol, DelegatedTaskRequest, DelegatedTaskSnapshot, HttpTargetTransport } from "./target-transport.js";
+import type { DelegatedTaskAccepted, DelegatedTaskProtocol, DelegatedTaskRequest, DelegatedTaskSnapshot } from "./target-transport.js";
+import type { RemoteApplicationGateway } from "./remote-application.js";
 
 export type Principal =
   | { readonly kind: "human"; readonly identity: string }
@@ -106,7 +107,7 @@ export class NodeDelegationService implements DelegatedTaskProtocol {
 }
 
 export class NodeDelegationClient {
-  constructor(private readonly application: { readonly identity: { readonly public: { readonly identity: string } }; readonly delegatedTasks: DelegatedTaskApplicationService }, private readonly transport: Pick<HttpTargetTransport, "createDelegatedTask" | "getDelegatedTask" | "cancelDelegatedTask">, private readonly childNodeId: string, private readonly parentIdentity = application.identity.public.identity) {}
+  constructor(private readonly application: { readonly identity: { readonly public: { readonly identity: string } }; readonly delegatedTasks: DelegatedTaskApplicationService }, private readonly transport: Pick<RemoteApplicationGateway, "createDelegatedTask" | "getDelegatedTask" | "cancelDelegatedTask">, private readonly childNodeId: string, private readonly parentIdentity = application.identity.public.identity) {}
   async create(request: DelegatedTaskRequest): Promise<DelegatedTaskAccepted> { const accepted = await this.transport.createDelegatedTask(request); await this.application.delegatedTasks.recordProjection(toDelegationRequest(request), accepted, this.parentIdentity, this.childNodeId); return accepted; }
   async get(accepted: Pick<DelegatedTaskAccepted, "delegationId" | "childTaskId">): Promise<DelegatedTaskSnapshot> { let snapshot: DelegatedTaskSnapshot; try { snapshot = await this.transport.getDelegatedTask(accepted.childTaskId, accepted.delegationId); } catch (error) { await this.application.delegatedTasks.markProjectionUnavailable(accepted.delegationId); throw error; } await this.application.delegatedTasks.updateProjection(accepted.delegationId, { status: snapshot.state as DelegatedTaskStatus, version: snapshot.taskVersion, ...(snapshot.resultSummary ? { result: { summary: snapshot.resultSummary } } : {}) }); return snapshot; }
   async cancel(accepted: Pick<DelegatedTaskAccepted, "delegationId" | "childTaskId">): Promise<DelegatedTaskSnapshot> { const snapshot = await this.transport.cancelDelegatedTask(accepted.childTaskId, accepted.delegationId); await this.application.delegatedTasks.updateProjection(accepted.delegationId, { status: snapshot.state as DelegatedTaskStatus, version: snapshot.taskVersion, ...(snapshot.resultSummary ? { result: { summary: snapshot.resultSummary } } : {}) }); return snapshot; }
