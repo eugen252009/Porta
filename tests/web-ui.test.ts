@@ -35,17 +35,22 @@ describe("Porta web workspace UX", () => {
     expect(app).toContain("nextOption.provider");
     expect(app).toContain("targetUrl(\"/api/models\")");
     expect(app).toContain("tab.selectedProvider");
-    expect(app).toContain("delete-task");
+    expect(app).toContain("delete-session");
     expect(app).toContain("loadTasks");
     expect(app).toContain("tab.selectedProvider");
     expect(app).toContain("model: selection");
     expect(app).not.toMatch(/apiKey|access_token|refresh_token/);
   });
 
-  it("exposes target node/task control-plane seams", () => {
-    expect(page).toContain('id="task-list"');
+  it("uses sessions as the primary navigation and exposes lifecycle seams", () => {
     expect(page).toContain('id="workspace-tabs"');
+    expect(page).toContain('id="delete-session"');
+    expect(page).not.toContain('id="session-list"');
+    expect(page).not.toContain('id="task-list"');
     expect(app).toContain('/api/tasks');
+    expect(app).toContain('/api/sessions/');
+    expect(app).toContain('attentionSummary.addEventListener');
+    expect(app).toContain('attentionLabel');
     expect(app).toContain('/api/node');
   });
 

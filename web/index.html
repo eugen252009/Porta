@@ -10,7 +10,7 @@
     <section id="auth-gate" hidden><h1>Secure this Porta</h1><p id="auth-message">Authenticate with your passkey to continue.</p><button id="passkey-auth" type="button">Use passkey</button></section>
     <main class="shell">
       <header class="topbar">
-        <div class="brand"><strong>Porta</strong><span id="attention-summary" class="attention-summary" hidden></span></div>
+        <div class="brand"><strong>Porta</strong><button id="attention-summary" class="attention-summary" type="button" hidden></button></div>
         <div class="top-actions"><button id="new-session" class="secondary-button" type="button">New task</button><button id="open-settings" class="icon-button" type="button" aria-label="Open settings" title="Settings">⚙</button><form method="post" action="/auth/logout"><button class="quiet" type="submit">Log out</button></form></div>
       </header>
       <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
@@ -23,19 +23,16 @@
           <details class="admin-section"><summary>System and diagnostics</summary><section class="provider-panel diagnostics"><p class="muted">Target and model context are shown in the active workspace header. Detailed activity and approvals appear with the selected task.</p></section></details>
         </div>
       </dialog>
-      <div class="workspace-tabs-wrap"><nav id="workspace-tabs" class="workspace-tabs" aria-label="Workspace tabs"><button id="new-tab" class="tab-add" type="button" aria-label="New tab">+</button></nav></div>
+      <div class="workspace-tabs-wrap"><nav id="workspace-tabs" class="workspace-tabs" aria-label="Sessions"><button id="new-tab" class="tab-add" type="button" aria-label="New session">+</button></nav></div>
+      <div id="attention-popover" class="attention-popover" hidden role="dialog" aria-label="Sessions needing attention"></div>
       <section class="task-header" aria-labelledby="task-title">
-        <div class="tab-context-bar"><div><div class="eyebrow">Active workspace</div><div class="tab-context-id" id="active-tab-context">New task</div></div><div class="tab-context-controls"><label class="context-select"><span>Target</span><select id="target-picker" aria-label="Target for this tab"><option value="local">Local</option></select></label><label class="context-select"><span>Model</span><select id="model-picker" aria-label="Model for this tab" disabled><option>Loading models…</option></select><span id="model" class="context-current" aria-live="polite"></span></label></div></div>
+        <div class="tab-context-bar"><div><div class="eyebrow">Active session</div><div class="tab-context-id" id="active-tab-context">New task</div><div id="attention-detail" class="attention-detail" hidden></div></div><div class="tab-context-controls"><label class="context-select"><span>Target</span><select id="target-picker" aria-label="Target for this tab"><option value="local">Local</option></select></label><label class="context-select"><span>Model</span><select id="model-picker" aria-label="Model for this tab" disabled><option>Loading models…</option></select><span id="model" class="context-current" aria-live="polite"></span></label></div></div>
         <div class="task-title-row"><h1 id="task-title">No objective yet</h1><span id="status" class="status-badge">Ready</span></div>
         <p id="task-summary" class="muted">Start a task and Porta will keep its work visible here.</p>
         <p id="model-hint" class="muted model-hint" hidden>Selection applies to the next session.</p>
-        <div class="controls" aria-label="Execution controls"><button id="delete-task" class="quiet" type="button" disabled>Delete task</button><button id="stop" class="danger-control" type="button" disabled>Stop</button></div>
+        <div class="controls" aria-label="Session controls"><button id="stop" class="danger-control" type="button" disabled>Stop</button><button id="delete-session" class="quiet" type="button" disabled>Delete session</button></div>
       </section>
       <section class="workspace">
-        <aside class="task-sidebar" aria-label="Task navigation">
-          <section class="task-list-panel" aria-label="Sessions"><div class="section-heading"><span>Sessions</span><button id="refresh-sessions" class="quiet" type="button">Refresh</button></div><div id="session-list" class="task-list"><div class="empty-panel">Loading sessions…</div></div></section>
-          <section class="task-list-panel" aria-label="Tasks"><div class="section-heading"><span>Tasks</span><button id="refresh-tasks" class="quiet" type="button">Refresh</button></div><div id="task-list" class="task-list"></div></section>
-        </aside>
         <div class="execution-column">
           <div class="section-heading"><span>Agent activity</span><span id="activity-count" class="muted"></span></div>
           <section id="messages" class="messages" aria-live="polite"><div class="empty">Your objective, assistant output, tool calls, and approvals will appear here.</div></section>
