@@ -13,13 +13,7 @@ export PORTA_DATA_DIR=/tmp/porta-browser-dogfood
 node --input-type=module -e 'import { IntegrationCredentialStore } from "./dist/src/integration-auth.js"; const created = new IntegrationCredentialStore(`${process.env.PORTA_DATA_DIR}/integrations`).create("local-browser-dogfood", ["nodes.read", "models.read", "prompt.submit"]); process.stdout.write(created.token + "\\n");'
 ```
 
-Save the one-time token privately for the extension options page. Then start Porta:
-
-```bash
-export PORTA_WEB_PORT=4178
-export PORTA_EXTENSION_ORIGINS=chrome-extension://<extension-id>
-npm run porta:web
-```
+Save the one-time token privately for the extension options page. Do not start Porta until the extension ID is known.
 
 The canonical local qualification endpoint is:
 
@@ -44,7 +38,14 @@ The token is displayed once for entry in the extension options page. Revoke it a
 ```
 
 6. Note the generated extension ID.
-7. Restart Porta with `PORTA_EXTENSION_ORIGINS` set to `chrome-extension://<extension-id>`.
+7. In a repository terminal, stop any old qualification server and start the isolated server:
+
+```bash
+export PORTA_WEB_PORT=4178
+export PORTA_EXTENSION_ORIGINS=chrome-extension://<extension-id>
+npm run porta:web
+```
+
 8. Open the extension options.
 9. Set `http://localhost:4178` and the temporary token.
 10. Grant the requested localhost host permission.
