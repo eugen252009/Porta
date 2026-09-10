@@ -53,7 +53,7 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("void activateSession(target.dataset.sessionId)");
     expect(app).toContain("await activateSession(id)");
     expect(app).toContain("revealActiveWorkspace()");
-    expect(app).toContain("workspace.scrollIntoView");
+    expect(app).toContain("activity.scrollIntoView");
     expect(app).toContain('reason: "approval_required"');
     expect(app).toContain("resolveApproval");
   });
@@ -77,6 +77,10 @@ describe("Porta greenfield web workspace", () => {
     expect(page).toContain('id="open-settings"');
     expect(page).toContain('id="settings-dialog"');
     expect(page).toContain('id="composer"');
-    expect(styles).toContain("@media(max-width:760px)");
+    expect(styles).toContain("@media(max-width:600px)");
+    expect(styles).toContain("grid-template-rows:auto minmax(0,1fr) auto");
+    expect(styles).toContain("overflow-y:auto");
+    expect(styles).toContain("height:100dvh");
+    expect(page).toContain('tabindex="-1"');
   });
 });

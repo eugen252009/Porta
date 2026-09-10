@@ -18,14 +18,14 @@
         <div class="global-actions"><button id="attention-button" class="attention-button" type="button" hidden></button><button id="new-session" class="icon-action" type="button" title="New session" aria-label="New session">+</button><button id="open-settings" class="icon-action" type="button" title="Settings" aria-label="Settings">⚙</button><form method="post" action="/auth/logout"><button class="text-action" type="submit">Log out</button></form></div>
       </header>
       <div id="attention-popover" class="attention-popover" hidden></div>
-      <section id="empty-state" class="empty-state"><div class="empty-mark">+</div><h1>No active sessions</h1><p>Start a session to work with Porta.</p><button id="empty-new-session" class="primary" type="button">New session</button></section>
-      <section id="workspace" class="workspace" hidden>
+      <section id="empty-state" class="empty-state"><div class="empty-mark">+</div><p class="eyebrow">Your workspace</p><h1>No active session</h1><p>Choose <strong>New session</strong> to begin. Your active session will appear here immediately.</p><button id="empty-new-session" class="primary" type="button">New session</button></section>
+      <section id="workspace" class="workspace" tabindex="-1" hidden>
         <header class="session-header">
           <div class="session-heading"><div><div class="kicker">Active session</div><h1 id="session-title">New session</h1><p id="session-subtitle" class="subtle">Ready to begin</p></div><details class="session-menu"><summary aria-label="Session actions">⋯</summary><div class="menu-panel"><button id="rename-session" type="button">Rename</button><button id="stop-session" type="button">Stop</button><button id="delete-session" class="destructive" type="button">Delete session</button></div></details></div>
           <div class="session-context"><label><span>Target</span><select id="session-target" aria-label="Target for active session"></select></label><label><span>Model</span><select id="session-model" aria-label="Model for active session"></select></label><span id="session-status" class="status-chip">Ready</span><span id="session-attention" class="attention-chip" hidden></span></div>
           <div id="task-actions" class="task-actions" hidden></div>
         </header>
-        <div id="activity" class="activity" aria-live="polite"></div>
+        <div id="activity" class="activity" aria-live="polite" aria-label="Session activity"></div>
         <div id="activity-summary" class="activity-summary" hidden></div>
         <form id="composer" class="composer"><textarea id="composer-input" rows="1" placeholder="What should Porta work on?" aria-label="Message"></textarea><div class="composer-footer"><span id="composer-status" class="subtle">Enter to send · Shift+Enter for a new line</span><button id="send" class="primary" type="submit">Send</button></div></form>
       </section>
