@@ -13,6 +13,8 @@ describe("Porta greenfield web workspace", () => {
     expect(page).not.toContain("task-list");
     expect(app).toContain("state.sessions");
     expect(app).toContain("activeSessionId");
+    expect(app).toContain("dataset.sessionId = session.id");
+    expect(app).toContain("tabsElement.addEventListener(\"click\"");
   });
 
   it("uses one guarded canonical creation flow", () => {
@@ -38,6 +40,8 @@ describe("Porta greenfield web workspace", () => {
     expect(page).toContain('id="session-attention"');
     expect(app).toContain("attentionLabel");
     expect(app).toContain("activateSession(session.id)");
+    expect(app).toContain("void activateSession(target.dataset.sessionId)");
+    expect(app).toContain("await activateSession(id)");
     expect(app).toContain('reason: "approval_required"');
     expect(app).toContain("resolveApproval");
   });
