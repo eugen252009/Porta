@@ -6,8 +6,16 @@ This checklist is intentionally manual. The repository environment currently has
 
 Use a temporary data directory and the repository's normal Web server. Do not use the NAS target for this qualification.
 
+Create the temporary scoped credential before starting Porta so the server loads it at startup:
+
 ```bash
 export PORTA_DATA_DIR=/tmp/porta-browser-dogfood
+node --input-type=module -e 'import { IntegrationCredentialStore } from "./dist/src/integration-auth.js"; const created = new IntegrationCredentialStore(`${process.env.PORTA_DATA_DIR}/integrations`).create("local-browser-dogfood", ["nodes.read", "models.read", "prompt.submit"]); process.stdout.write(created.token + "\\n");'
+```
+
+Save the one-time token privately for the extension options page. Then start Porta:
+
+```bash
 export PORTA_EXTENSION_ORIGINS=chrome-extension://<extension-id>
 npm run porta:web
 ```
@@ -19,12 +27,6 @@ http://localhost:4173
 ```
 
 The current `porta.json` NAS endpoint is `http://192.168.188.2:4173`; it is not suitable for the hardened extension because non-local HTTP is rejected. Use an HTTPS deployment for a real remote endpoint.
-
-Create a temporary scoped credential without printing or committing it to logs:
-
-```bash
-node --input-type=module -e 'import { IntegrationCredentialStore } from "./dist/src/integration-auth.js"; const store = new IntegrationCredentialStore(process.env.PORTA_DATA_DIR); const created = store.create("local-browser-dogfood", ["nodes.read", "models.read", "prompt.submit"]); process.stdout.write(created.token + "\n");'
-```
 
 The token is displayed once for entry in the extension options page. Revoke it after testing through the normal credential-management API or by removing the temporary data directory.
 
