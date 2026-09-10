@@ -36,6 +36,23 @@ describe("federated Web control", () => {
     } finally { await value.a.close(); await value.b.close(); await rm(value.root, { recursive: true, force: true }); }
   });
 
+  it("projects remote tasks, approvals, and cancellation through the application boundary", async () => {
+    const value = await setup();
+    try {
+      const session = await value.remote.createSession({});
+      await value.b.application.tasks.create(session.id, "remote operation task");
+      expect((await value.remote.getTask(session.id))?.status).toBe("active");
+      const approvalPromise = value.b.application.pendingApprovals.approve({ approvalId: "remote-approval", toolCallId: "remote-call", invocation: { schemaVersion: 1, requestId: "remote-request", toolId: "execution/run", input: { command: "npm test" } }, context: { traceId: "remote-trace", sessionId: session.id, executionId: "remote-execution", signal: new AbortController().signal } });
+      expect((await value.remote.listApprovals()).map((approval) => approval.approvalId)).toContain("remote-approval");
+      const resolved = await value.remote.resolveApproval("remote-approval", "deny", "denied by remote operator");
+      expect(resolved.decision).toBe("deny");
+      await expect(approvalPromise).resolves.toMatchObject({ approved: false, reason: "denied by remote operator" });
+      expect((await value.remote.cancelSession(session.id)).status).toBe("cancelled");
+      expect((await value.remote.getTask(session.id))?.status).toBe("cancelled");
+      expect(await value.remote.listApprovals()).toEqual([]);
+    } finally { await value.a.close(); await value.b.close(); await rm(value.root, { recursive: true, force: true }); }
+  });
+
   it("aggregates a known child through application APIs and keeps sessions child-owned", async () => {
     const value = await setup(); const web = createPortaWebServer({ ...value.a.application, uiSessions: new Map([["human", Date.now() + 60_000]]) }, { port: 0 }); await web.listen(); const address = web.server.address(); if (!address || typeof address === "string") throw new Error("web address unavailable");
     try {

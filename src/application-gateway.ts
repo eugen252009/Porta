@@ -70,6 +70,7 @@ export class InteractiveApprovalGateway implements ApplicationGateway {
       const subscription = approvalEvents as unknown as { close?: () => void }; subscription.close?.();
     }
   }
+  hasActiveExecution(sessionId: string): boolean { return this.active.has(sessionId); }
   async shutdown(): Promise<void> { await Promise.all([...this.active.values()].map((execution) => execution.cancel())); this.active.clear(); }
   private async prepareContext(sessionId: string, context: ModelContext): Promise<{ history: readonly import("./contracts.js").ModelMessage[]; control: readonly import("./contracts.js").ModelControlMessage[] }> {
     const snapshot = await this.conversations.snapshot(sessionId); const threshold = this.contextOptions.threshold;
