@@ -15,6 +15,7 @@ export interface PortaNodeTargetOptions extends PortaTargetCapabilityOptions {
 }
 
 export interface PortaNodeOptions {
+  readonly identity?: InstanceIdentityStore;
   readonly identityDirectory?: string;
   readonly target?: PortaNodeTargetOptions;
   readonly factories?: Omit<PortaFactories, "identity" | "target">;
@@ -35,7 +36,7 @@ export interface PortaNode {
 export async function createPortaNode(config: PortaConfig, options: PortaNodeOptions = {}): Promise<PortaNode> {
   const target = options.target;
   const nodeConfig = target ? configForTargetNode(config, target) : config;
-  const identity = new InstanceIdentityStore(options.identityDirectory ?? target?.identityDirectory ?? process.env.PORTA_DATA_DIR ?? ".porta");
+  const identity = options.identity ?? new InstanceIdentityStore(options.identityDirectory ?? target?.identityDirectory ?? process.env.PORTA_DATA_DIR ?? ".porta");
   const application = await createPortaApplication(nodeConfig, {
     ...options.factories,
     identity,

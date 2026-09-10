@@ -2,6 +2,7 @@ import type { ApplicationGateway, CommandContext, KernelEvent } from "./contract
 import type { DevelopmentReleaseTarget } from "./development-runner.js";
 import { targetRequest } from "./target-transport.js";
 import type { TargetOperation, TargetOperationResult, TargetTransport } from "./target-transport.js";
+import { RemoteApplicationGateway } from "./remote-application.js";
 
 export type ExecutionTargetCapability = "filesystem.read" | "filesystem.write" | "execution.run" | "git.current_revision" | "git.status" | "git.diff" | "git.commit" | "git.push" | "image.build" | "image.push";
 
@@ -15,6 +16,7 @@ export interface ExecutionTarget {
   gateway?: ApplicationGateway;
   release?: DevelopmentReleaseTarget;
   transport?: TargetTransport;
+  application?: RemoteApplicationGateway;
   invoke?(operation: TargetOperation, input: unknown, context?: { readonly signal?: AbortSignal; readonly deadline?: number }): Promise<TargetOperationResult>;
 }
 
@@ -26,7 +28,8 @@ export interface TargetResolution {
 export class RemoteExecutionTarget implements ExecutionTarget {
   release?: DevelopmentReleaseTarget;
   private description?: Awaited<ReturnType<TargetTransport["describe"]>>;
-  constructor(readonly id: string, readonly kind: string, readonly transport: TargetTransport, private readonly expectedWorkspaceId?: string, release?: DevelopmentReleaseTarget) { this.release = release; }
+  readonly application?: RemoteApplicationGateway;
+  constructor(readonly id: string, readonly kind: string, readonly transport: TargetTransport, private readonly expectedWorkspaceId?: string, release?: DevelopmentReleaseTarget) { this.release = release; const candidate = transport as TargetTransport & { describeApplication?: () => unknown }; if (candidate.describeApplication) this.application = new RemoteApplicationGateway(transport as unknown as ConstructorParameters<typeof RemoteApplicationGateway>[0]); }
   get workspace(): { readonly id: string; readonly path: string } | undefined { return this.description?.workspace ? { id: this.description.workspace.id, path: this.description.workspace.path } : undefined; }
   async capabilities(): Promise<readonly ExecutionTargetCapability[]> { return (this.description ??= await this.transport.describe()).capabilities; }
   async available(): Promise<boolean> { try { const description = this.description = await this.transport.describe(); if (description.id !== this.id || (this.expectedWorkspaceId !== undefined && description.workspace?.id !== this.expectedWorkspaceId)) return false; return description.available; } catch { return false; } }

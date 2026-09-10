@@ -31,7 +31,7 @@ export interface CapabilityResolver { resolve(requirement: CapabilityRequirement
 export interface PluginRegistrar { provide(capability: CapabilityDescriptor, component: unknown): void }
 export interface HarnessPlugin { readonly manifest: PluginManifest; register(registrar: PluginRegistrar): void | Promise<void>; initialize?: Initializable["initialize"]; start?: Startable["start"]; stop?: Stoppable["stop"] }
 
-export interface ExecutionContext { readonly traceId: string; readonly sessionId: string; readonly executionId: string; readonly signal: AbortSignal; readonly deadline?: number }
+export interface ExecutionContext { readonly traceId: string; readonly sessionId: string; readonly executionId: string; readonly signal: AbortSignal; readonly deadline?: number; readonly delegatedTaskId?: string }
 export interface CommandContext { readonly signal?: AbortSignal; readonly deadline?: number; readonly traceId?: string }
 export interface ModelDescriptor { readonly id: string; readonly version: string; readonly capabilities: readonly CapabilityDescriptor[] }
 export interface ModelOption { readonly id: string; readonly displayName: string; readonly provider: string }
