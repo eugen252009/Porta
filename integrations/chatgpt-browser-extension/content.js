@@ -21,13 +21,18 @@
     for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) { if (hasOpenEditorAction(ancestor)) { if (isAssistantCandidate(ancestor)) break; continue; } const roots = artifactRoots(ancestor).filter((root) => text(root)); if (roots.length === 1) return { type: "code", root: roots[0], source: roots[0] }; if (isAssistantCandidate(ancestor)) break; }
     return null;
   }
-  function findMarkdownEditorArtifactForCopyButton(copyButton) {
+  function writingBlockHeaderFor(copyButton) { return copyButton.closest('[data-testid="writing-block-header-surface"]'); }
+  function findWritingBlockArtifact(header) {
     const hasContent = (source) => source instanceof HTMLTextAreaElement ? Boolean(source.value.trim()) : Boolean(text(source));
-    let ancestor = copyButton.parentElement;
-    for (let depth = 0; ancestor && depth < 10; depth++, ancestor = ancestor.parentElement) { if (!copyButtons(ancestor).some(isOpenEditorButton)) { if (isAssistantCandidate(ancestor)) break; continue; } const sources = []; if (ancestor.matches?.("textarea, [contenteditable=true], pre, [data-testid=code-block]")) sources.push(ancestor); sources.push(...ancestor.querySelectorAll("textarea, [contenteditable=true], pre, [data-testid=code-block]")); const unique = [...new Set(sources)].filter((source) => !extensionOwned(source) && hasContent(source)); if (unique.length === 1) return { type: "markdown-editor", root: ancestor, source: unique[0] }; if (isAssistantCandidate(ancestor)) break; }
+    const sourceSelectors = ["textarea", "[contenteditable=true]", '[data-testid*="writing-block"]', "pre", "[data-testid=code-block]"];
+    let ancestor = header.parentElement;
+    for (let depth = 0; ancestor && depth < 8; depth++, ancestor = ancestor.parentElement) {
+      for (const selector of sourceSelectors) { const sources = []; if (ancestor.matches?.(selector)) sources.push(ancestor); sources.push(...ancestor.querySelectorAll(selector)); const unique = [...new Set(sources)].filter((source) => source !== header && !header.contains(source) && !extensionOwned(source) && hasContent(source)); if (unique.length === 1) return { type: "writing-block", root: ancestor, header, source: unique[0] }; if (unique.length > 1) break; }
+      if (isAssistantCandidate(ancestor)) break;
+    }
     return null;
   }
-  function findArtifactForCopyButton(copyButton) { return findMarkdownEditorArtifactForCopyButton(copyButton) || findCodeArtifactForCopyButton(copyButton); }
+  function findArtifactForCopyButton(copyButton) { const header = writingBlockHeaderFor(copyButton); if (header) return findWritingBlockArtifact(header); return findCodeArtifactForCopyButton(copyButton); }
   function actionButtons(scope) { const buttons = []; if (scope.matches?.(COPY_BUTTON_SELECTOR)) buttons.push(scope); buttons.push(...scope.querySelectorAll(COPY_BUTTON_SELECTOR)); return [...new Set(buttons)]; }
   function copyButtons(scope) { return actionButtons(scope).filter(isNativeCopyButton); }
   function hasOpenEditorAction(scope) { return actionButtons(scope).some(isOpenEditorButton); }
