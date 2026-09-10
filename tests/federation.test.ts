@@ -11,11 +11,12 @@ import { HttpTargetTransport } from "../src/target-transport.js";
 import { createNodeApplicationProtocol, RemoteApplicationGateway } from "../src/remote-application.js";
 import { RemoteExecutionTarget, TargetRegistry } from "../src/target.js";
 import { createPortaWebServer } from "../src/web-server.js";
+import type { DurableExecution } from "../src/execution-persistence.js";
 
 async function setup() {
   const root = mkdtempSync(join(tmpdir(), "porta-federation-")); const aWorkspace = join(root, "a-workspace"); const bWorkspace = join(root, "b-workspace"); mkdirSync(aWorkspace); mkdirSync(bWorkspace);
   const identityA = new InstanceIdentityStore(join(root, "identity-a")); const identityB = new InstanceIdentityStore(join(root, "identity-b"));
-  const config = parsePortaConfig({ model: { provider: "ollama", baseUrl: "http://127.0.0.1:1", model: "local-model" }, authorization: { mode: "allow-all" }, delegation: { enabled: true } });
+  const config = parsePortaConfig({ model: { provider: "ollama", baseUrl: "http://127.0.0.1:1", model: "local-model" }, authorization: { mode: "allow-all" }, delegation: { enabled: true }, persistence: { enabled: true, path: join(root, "b-state.db") } });
   const b = await createPortaNode(config, { identity: identityB, factories: { model: () => new MockModelProvider("B result") }, target: { id: "b", workspaceId: "b-workspace", workspaceRoot: bWorkspace, identityDirectory: join(root, "identity-b"), allowedClientIdentities: [identityA.public] } });
   const bAddress = await b.targetServer!.listen(); const transport = new HttpTargetTransport({ endpoint: `http://127.0.0.1:${bAddress.port}`, clientIdentity: identityA }); const registry = new TargetRegistry(); registry.register(new RemoteExecutionTarget("b", "porta-node", transport, "b-workspace"));
   const a = await createPortaNode(config, { identity: identityA, factories: { model: () => new MockModelProvider("A result"), targetRegistry: registry } }); await a.application.start(); await b.application.start();
@@ -34,6 +35,9 @@ describe("federated Web control", () => {
       const afterRestart = await restartedProtocol.getSession(session.id, value.a.identity.public.identity);
       expect(afterRestart?.history).toEqual(observed?.history);
     } finally { await value.a.close(); await value.b.close(); await rm(value.root, { recursive: true, force: true }); }
+  });
+
+  it("resolves a restored approval through the authenticated federation boundary", async () => { const value = await setup(); try { const session = await value.remote.createSession({}); const approvalId = "federated-recovery-approval"; const executionId = "federated-recovery-execution"; const toolCallId = "federated-recovery-call"; const now = new Date().toISOString(); const descriptor = value.b.application.toolRouter.descriptorFor("artifact/list"); const request = { approvalId, toolCallId, invocation: { schemaVersion: 1 as const, requestId: toolCallId, toolId: "artifact/list", input: {} }, context: { traceId: "federated-recovery-trace", sessionId: session.id, executionId, signal: new AbortController().signal } }; const waiting = value.b.application.pendingApprovals.approve(request); const checkpoint: DurableExecution = { executionId, sessionId: session.id, traceId: request.context.traceId, phase: "approval_required", version: 1, input: "recover", history: [{ role: "user", content: "recover" }], currentToolCall: { id: toolCallId, toolId: "artifact/list", input: {} }, approvalId, createdAt: now, updatedAt: now }; value.b.application.executions.save(checkpoint); await value.b.application.start(); expect((await value.remote.listApprovals()).map((entry) => entry.approvalId)).toContain(approvalId); await value.remote.resolveApproval(approvalId, "approve", "federated recovery"); await expect(waiting).resolves.toMatchObject({ approved: true }); for (let i = 0; i < 50 && value.b.application.executions.get(executionId)?.phase !== "completed"; i++) await new Promise((resolve) => setTimeout(resolve, 5)); expect(value.b.application.executions.get(executionId)?.phase).toBe("completed"); expect((await value.remote.getSession(session.id))?.history).toEqual(expect.arrayContaining([{ role: "assistant", content: "B result" }])); } finally { await value.a.close(); await value.b.close(); }
   });
 
   it("projects remote tasks, approvals, and cancellation through the application boundary", async () => {

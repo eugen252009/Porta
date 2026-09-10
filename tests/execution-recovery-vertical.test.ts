@@ -32,8 +32,11 @@ it("recovers an approval-blocked execution from SQLite and continues without reg
   expect(before.phase).toBe("approval_required"); expect(before.currentToolCall?.id).toBe("stable-call"); expect(model.turns).toBe(1); expect(tool.calls).toHaveLength(0);
 
   const secondPending = new PendingApprovalProvider(persistence.approvals);
-  const second = new InteractiveApprovalGateway(model, tools, secondPending, new StaticToolAuthorizationPolicy("require-approval"), undefined, persistence.conversations, {}, undefined, persistence.executions);
-  await collect(second.execute({ type: "ResolveApproval", approvalId: approval.approvalId, decision: "approve" }));
+  new InteractiveApprovalGateway(model, tools, secondPending, new StaticToolAuthorizationPolicy("require-approval"), undefined, persistence.conversations, {}, undefined, persistence.executions);
+  const thirdPending = new PendingApprovalProvider(persistence.approvals);
+  const third = new InteractiveApprovalGateway(model, tools, thirdPending, new StaticToolAuthorizationPolicy("require-approval"), undefined, persistence.conversations, {}, undefined, persistence.executions);
+  expect(secondPending.pendingRequests().map((entry) => entry.approvalId)).toEqual([approval.approvalId]); expect(thirdPending.pendingRequests().map((entry) => entry.approvalId)).toEqual([approval.approvalId]);
+  await collect(third.execute({ type: "ResolveApproval", approvalId: approval.approvalId, decision: "approve" }));
   for (let i = 0; i < 50 && tool.calls.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   expect(tool.calls).toHaveLength(1);
   for (let i = 0; i < 50 && persistence.executions.get(before.executionId)?.phase !== "completed"; i++) await new Promise((resolve) => setTimeout(resolve, 5));
