@@ -13,7 +13,7 @@ export class RemoteApplicationGateway {
   constructor(private readonly transport: RemoteApplicationTransport) {}
   async describe(): Promise<NodeApplicationDescription> { return this.call(() => this.transport.describeApplication()); }
   async models(): Promise<readonly unknown[]> { return this.call(() => this.transport.listApplicationModels()); }
-  async createSession(input: { readonly target?: string; readonly model?: { readonly provider: string; readonly model: string } }): Promise<NodeSessionSnapshot> { return this.call(() => this.transport.createApplicationSession(input)); }
+  async createSession(input: { readonly sessionId?: string; readonly target?: string; readonly model?: { readonly provider: string; readonly model: string } }): Promise<NodeSessionSnapshot> { return this.call(() => this.transport.createApplicationSession(input)); }
   async listTasks(): Promise<readonly NodeTaskSummary[]> { return this.call(() => this.transport.listApplicationTasks()); }
   async listSessions(): Promise<readonly NodeSessionSnapshot[]> { return this.call(() => this.transport.listApplicationSessions()); }
   async getSession(sessionId: string): Promise<NodeSessionSnapshot | undefined> { return this.call(() => this.transport.getApplicationSession(sessionId)); }
@@ -32,9 +32,10 @@ export function createNodeApplicationProtocol(application: PortaApplication): No
     async describe() { return { version: 1, nodeIdentity: application.identity.public.identity, capabilities: ["delegatedTasks", "models", "sessions", ...(application.localTarget ? ["primitiveExecution"] : [])], attentionCount: application.pendingApprovals.pendingRequests().length, activeTaskCount: (await application.tasks.list()).filter((task) => task.status === "active" || task.status === "blocked").length }; },
     async models() { return application.modelCatalog(); },
     async createSession(input, principalIdentity) {
-      if (input.model) await application.resolveModel(`${input.model.provider}/${input.model.model}`);
-      const events = []; for await (const event of application.gateway.execute({ type: "CreateSession", ...(input.target ? { target: input.target } : {}), ...(input.model ? { model: input.model } : {}) })) events.push(event);
-      const created = events.find((event) => event.type === "SessionCreated"); if (!created || created.type !== "SessionCreated") throw new Error("SESSION_CREATE_FAILED");
+      if (input.sessionId && sessionOwners.get(input.sessionId) !== principalIdentity) throw new Error("APPLICATION_ACCESS_DENIED");
+      if (input.model && !input.sessionId) await application.resolveModel(`${input.model.provider}/${input.model.model}`);
+      const events = []; for await (const event of application.gateway.execute({ type: "CreateSession", ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.target ? { target: input.target } : {}), ...(input.model && !input.sessionId ? { model: input.model } : {}) })) events.push(event);
+      const created = events.find((event) => event.type === "SessionCreated"); if (!created || created.type !== "SessionCreated") throw new Error(input.sessionId ? "SESSION_NOT_FOUND" : "SESSION_CREATE_FAILED");
       sessionOwners.set(created.sessionId, principalIdentity); const session = await application.conversations.getSession(created.sessionId); if (!session) throw new Error("SESSION_CREATE_FAILED"); return sessionSnapshot(session);
     },
     async listTasks(principalIdentity) { const ownedSessions = new Set([...sessionOwners.entries()].filter(([, owner]) => owner === principalIdentity).map(([sessionId]) => sessionId)); return (await application.tasks.list()).filter((task) => ownedSessions.has(task.sessionId)).map((task) => ({ id: task.id, sessionId: task.sessionId, status: task.status, objective: task.objective.slice(0, 160), updatedAt: task.updatedAt })); },
@@ -50,6 +51,7 @@ function classifyRemoteError(error: unknown): RemoteApplicationError {
   if (error instanceof RemoteApplicationError) return error;
   if (error instanceof TransportError) return new RemoteApplicationError(error.status === 401 || error.status === 403 ? "denied" : error.status === 404 ? "unsupported" : "failed", error.message, error);
   if (error instanceof Error && /authentication|unauthorized|forbidden|401|403/i.test(error.message)) return new RemoteApplicationError("denied", error.message, error);
+  if (error instanceof Error && /session_not_found|not found/i.test(error.message)) return new RemoteApplicationError("unsupported", error.message, error);
   if (error instanceof TypeError || (error instanceof Error && /fetch|network|connect|socket|econnrefused|timed out/i.test(error.message))) return new RemoteApplicationError("unavailable", error instanceof Error ? error.message : "Remote node is unavailable.", error);
   return new RemoteApplicationError("failed", error instanceof Error ? error.message : "Remote application operation failed.", error);
 }

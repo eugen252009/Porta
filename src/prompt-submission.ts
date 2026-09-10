@@ -6,9 +6,9 @@ import type { ConversationStore } from "./contracts.js";
 import { RemoteApplicationError, type RemoteApplicationGateway } from "./remote-application.js";
 import type { ApplicationEventHub } from "./application-events.js";
 
-export interface PromptSubmitRequest { readonly content: string; readonly targetNodeId?: string; readonly requestedModel?: ModelSelection; readonly mode?: "session" | "task"; readonly idempotencyKey: string; readonly source?: string }
+export interface PromptSubmitRequest { readonly content: string; readonly targetNodeId?: string; readonly sessionId?: string; readonly requestedModel?: ModelSelection; readonly mode?: "session" | "task"; readonly idempotencyKey: string; readonly source?: string }
 export interface PromptSubmitResult { readonly nodeId: string; readonly sessionId: string; readonly status: "accepted" }
-export class PromptSubmissionError extends Error { constructor(readonly kind: "unavailable" | "denied" | "unsupported" | "failed", message: string, readonly cause?: unknown) { super(message); this.name = "PromptSubmissionError"; } }
+export class PromptSubmissionError extends Error { constructor(readonly kind: "unavailable" | "denied" | "unsupported" | "not_found" | "failed", message: string, readonly cause?: unknown) { super(message); this.name = "PromptSubmissionError"; } }
 interface PromptSubmissionContext { readonly nodeId: string; readonly gateway: ApplicationGateway; readonly conversations: ConversationStore; readonly executionTargets: TargetRegistry; resolveModel(requested?: string): Promise<import("./contracts.js").ModelProvider>; readonly events: ApplicationEventHub }
 
 /** Canonical application operation used by Web and external clients to create normal Porta work. */
@@ -21,13 +21,18 @@ export class PromptSubmissionService {
     const targetNodeId = request.targetNodeId || "local"; const key = `${principal.identity}:${targetNodeId}:${request.idempotencyKey}`; const existing = this.idempotent.get(key); if (existing) return existing;
     const model = request.requestedModel;
     if (targetNodeId === "local") {
-      if (model) await this.context.resolveModel(`${model.provider}/${model.model}`);
-      const events = await collect(this.context.gateway.execute({ type: "CreateSession", target: "local", ...(model ? { model } : {}) }, {})); const created = events.find((event): event is Extract<import("./contracts.js").KernelEvent, { type: "SessionCreated" }> => event.type === "SessionCreated"); if (!created) throw new PromptSubmissionError("failed", "Porta could not create a session.");
-      const result = { nodeId: this.context.nodeId, sessionId: created.sessionId, status: "accepted" as const }; this.idempotent.set(key, result); this.persist(); this.context.events.publish({ type: "session.created", nodeId: result.nodeId, sessionId: result.sessionId }); void collect(this.context.gateway.execute({ type: "SubmitInput", sessionId: result.sessionId, input: request.content }, {})).catch(() => undefined); return result;
+      if (model && !request.sessionId) await this.context.resolveModel(`${model.provider}/${model.model}`);
+      if (request.sessionId) {
+        const existing = await this.context.conversations.getSession(request.sessionId);
+        if (!existing || existing.state !== "open") throw new PromptSubmissionError("not_found", `Session '${request.sessionId}' is unavailable.`);
+        if (existing.target && existing.target !== "local") throw new PromptSubmissionError("denied", `Session '${request.sessionId}' does not belong to target 'local'.`);
+      }
+      const events = await collect(this.context.gateway.execute({ type: "CreateSession", ...(request.sessionId ? { sessionId: request.sessionId } : { target: "local", ...(model ? { model } : {}) }) }, {})); const created = events.find((event): event is Extract<import("./contracts.js").KernelEvent, { type: "SessionCreated" }> => event.type === "SessionCreated"); if (!created) throw new PromptSubmissionError("failed", "Porta could not create or resume a session.");
+      const result = { nodeId: this.context.nodeId, sessionId: created.sessionId, status: "accepted" as const }; this.idempotent.set(key, result); this.persist(); this.context.events.publish({ type: request.sessionId ? "session.updated" : "session.created", nodeId: result.nodeId, sessionId: result.sessionId }); void collect(this.context.gateway.execute({ type: "SubmitInput", sessionId: result.sessionId, input: request.content }, {})).catch(() => undefined); return result;
     }
     const target = this.context.executionTargets.resolve(targetNodeId); const remote = target?.application as RemoteApplicationGateway | undefined; if (!target || !remote) throw new PromptSubmissionError("unsupported", `Target '${targetNodeId}' does not expose prompt submission.`);
-    try { const session = await remote.createSession(model ? { model } : {}); const result = { nodeId: targetNodeId, sessionId: session.id, status: "accepted" as const }; this.idempotent.set(key, result); this.persist(); this.context.events.publish({ type: "session.created", nodeId: targetNodeId, sessionId: session.id }); void remote.submitSession(session.id, request.content).catch(() => undefined); return result; }
-    catch (error) { if (error instanceof RemoteApplicationError) throw new PromptSubmissionError(error.kind, error.message, error); throw new PromptSubmissionError("failed", error instanceof Error ? error.message : "Remote prompt submission failed.", error); }
+    try { const session = await remote.createSession(request.sessionId ? { sessionId: request.sessionId } : (model ? { model } : {})); const result = { nodeId: targetNodeId, sessionId: session.id, status: "accepted" as const }; this.idempotent.set(key, result); this.persist(); this.context.events.publish({ type: request.sessionId ? "session.updated" : "session.created", nodeId: targetNodeId, sessionId: session.id }); void remote.submitSession(session.id, request.content).catch(() => undefined); return result; }
+    catch (error) { if (error instanceof RemoteApplicationError) throw new PromptSubmissionError(error.kind === "unsupported" && request.sessionId ? "not_found" : error.kind, error.message, error); throw new PromptSubmissionError("failed", error instanceof Error ? error.message : "Remote prompt submission failed.", error); }
   }
   private persist(): void { if (this.persistencePath) writeFileSync(this.persistencePath, JSON.stringify(Object.fromEntries(this.idempotent), null, 2) + "\n", { mode: 0o600 }); }
 }
