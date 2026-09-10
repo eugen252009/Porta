@@ -15,6 +15,14 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("activeSessionId");
   });
 
+  it("uses one guarded canonical creation flow", () => {
+    expect(app).toContain("async function createSession(targetId, model)");
+    expect(app).toContain("await createSession(targetId || \"local\", model || undefined)");
+    expect(app).toContain("state.creatingSession");
+    expect(app).toContain("sessionCreateError.hidden = false");
+    expect(app).toContain("activeSessionId = id");
+  });
+
   it("keeps target and model context on the active session", () => {
     expect(page).toContain('id="session-target"');
     expect(page).toContain('id="session-model"');
