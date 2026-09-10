@@ -2,21 +2,23 @@ import { randomUUID } from "node:crypto";
 import { AllowAllToolAuthorizationPolicy } from "./authorization-mocks.js";
 import { ApprovalProvider, HarnessFailure, ModelContext, ModelControlMessage, ModelMessage, ModelProvider, ModelRequest, ModelToolCall, ModelToolResult, ToolAuthorizationPolicy, ToolContext, ToolDescriptor, ToolResult, failure, modelToolCallSchema } from "./contracts.js";
 import { ToolRouter } from "./tools.js";
+import type { DurableExecution } from "./execution-persistence.js";
 
 export interface AgentLimits { maxSteps: number; maxToolCalls: number }
 export interface AgentExecutionResult { executionId: string; status: "completed" | "failed" | "cancelled" | "timed-out" | "limit-reached"; text?: string; messages?: readonly ModelMessage[]; error?: import("./contracts.js").HarnessError }
-export type AgentEvent = { type: "started"; executionId: string } | { type: "model-started"; step: number } | { type: "model-text"; text: string } | { type: "tool-requested"; toolCallId: string; toolId: string } | { type: "tool-started"; toolCallId: string; toolId: string } | { type: "tool-completed"; toolCallId: string; toolId: string; result: ModelToolResult } | { type: "completed"; text?: string } | { type: "failed"; error: import("./contracts.js").HarnessError } | { type: "cancelled" } | { type: "timed-out" } | { type: "limit-reached" };
+export type AgentEvent = { type: "started"; executionId: string } | { type: "model-started"; step: number } | { type: "model-text"; text: string } | { type: "tool-requested"; toolCallId: string; toolId: string; input: import("./contracts.js").JsonValue } | { type: "tool-started"; toolCallId: string; toolId: string } | { type: "tool-completed"; toolCallId: string; toolId: string; result: ModelToolResult } | { type: "completed"; text?: string } | { type: "failed"; error: import("./contracts.js").HarnessError } | { type: "cancelled" } | { type: "timed-out" } | { type: "limit-reached" };
 export interface AgentExecution { readonly id: string; events(): AsyncIterable<AgentEvent>; cancel(reason?: string): Promise<void>; result(): Promise<AgentExecutionResult> }
 export interface AgentAuthorizationOptions { policy?: ToolAuthorizationPolicy; approvalProvider?: ApprovalProvider }
 
 export class AgentOrchestrator {
   constructor(private readonly model: ModelProvider, private readonly tools?: ToolRouter, private readonly limits: AgentLimits = { maxSteps: 8, maxToolCalls: 16 }, private readonly authorization: AgentAuthorizationOptions = {}) {}
-  create(input: string, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], history: readonly ModelMessage[] = [], control: readonly ModelControlMessage[] = []): AgentExecution { return new ManagedAgent(this.model, this.tools, this.limits, this.authorization, input, context, descriptors, history, control); }
+  create(input: string, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], history: readonly ModelMessage[] = [], control: readonly ModelControlMessage[] = [], executionId?: string): AgentExecution { return new ManagedAgent(this.model, this.tools, this.limits, this.authorization, input, context, descriptors, history, control, executionId); }
+  createRecovered(state: DurableExecution, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], control: readonly ModelControlMessage[] = []): AgentExecution { const recoveredModel: ModelProvider = new RecoveredModel(this.model, state.currentToolCall!); return new ManagedAgent(recoveredModel, this.tools, this.limits, { policy: new AllowAllToolAuthorizationPolicy() }, state.input, context, descriptors, state.history, control, state.executionId); }
 }
 
 class ManagedAgent implements AgentExecution {
-  readonly id = randomUUID(); private readonly queue = new AsyncQueue<AgentEvent>(); private readonly completion: Promise<AgentExecutionResult>; private resolveResult!: (result: AgentExecutionResult) => void; private terminalCause?: "cancelled" | "timed-out" | "limit-reached"; private terminal = false; private readonly controller = new AbortController(); private running: Promise<void>;
-  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter | undefined, private readonly limits: AgentLimits, private readonly authorization: AgentAuthorizationOptions, private readonly input: string, private readonly parent: ModelContext, private readonly descriptors: readonly ToolDescriptor[], private readonly initialHistory: readonly ModelMessage[], private readonly control: readonly ModelControlMessage[]) { this.completion = new Promise((resolve) => { this.resolveResult = resolve; }); parent.signal.addEventListener("abort", () => this.stop("cancelled"), { once: true }); if (parent.deadline !== undefined) setTimeout(() => this.stop("timed-out"), Math.max(0, parent.deadline - Date.now())); this.running = this.run(); }
+  readonly id: string; private readonly queue = new AsyncQueue<AgentEvent>(); private readonly completion: Promise<AgentExecutionResult>; private resolveResult!: (result: AgentExecutionResult) => void; private terminalCause?: "cancelled" | "timed-out" | "limit-reached"; private terminal = false; private readonly controller = new AbortController(); private running: Promise<void>;
+  constructor(private readonly model: ModelProvider, private readonly tools: ToolRouter | undefined, private readonly limits: AgentLimits, private readonly authorization: AgentAuthorizationOptions, private readonly input: string, private readonly parent: ModelContext, private readonly descriptors: readonly ToolDescriptor[], private readonly initialHistory: readonly ModelMessage[], private readonly control: readonly ModelControlMessage[], executionId?: string) { this.id = executionId ?? randomUUID(); this.completion = new Promise((resolve) => { this.resolveResult = resolve; }); parent.signal.addEventListener("abort", () => this.stop("cancelled"), { once: true }); if (parent.deadline !== undefined) setTimeout(() => this.stop("timed-out"), Math.max(0, parent.deadline - Date.now())); this.running = this.run(); }
   events(): AsyncIterable<AgentEvent> { return this.queue; }
   async cancel(): Promise<void> { this.stop("cancelled"); await this.running; }
   result(): Promise<AgentExecutionResult> { return this.completion; }
@@ -41,7 +43,7 @@ class ManagedAgent implements AgentExecution {
             const call = event.call; if (seen.has(call.id)) throw failure("MODEL_FAILED", `Model repeated tool call '${call.id}'.`); seen.add(call.id);
             if (!this.tools) throw failure("CAPABILITY_UNAVAILABLE", "Tool use is unavailable for this execution.");
             if (++toolCalls > this.limits.maxToolCalls) { this.stop("limit-reached"); return this.finishCause(); }
-            turnCalls.push(call); this.push({ type: "tool-requested", toolCallId: call.id, toolId: call.toolId });
+            turnCalls.push(call); this.push({ type: "tool-requested", toolCallId: call.id, toolId: call.toolId, input: call.input }); await Promise.resolve();
           }
         }
         if (turnCalls.length) {
@@ -81,4 +83,14 @@ class ManagedAgent implements AgentExecution {
 }
 function freezeMessages(messages: readonly ModelMessage[]): readonly ModelMessage[] { return Object.freeze(messages.map((message) => freeze(message))); }
 function freeze<T>(value: T): T { if (value && typeof value === "object" && !Object.isFrozen(value)) { Object.freeze(value); for (const child of Object.values(value as Record<string, unknown>)) freeze(child); } return value; }
+class RecoveredModel implements ModelProvider {
+  readonly descriptor: ModelProvider["descriptor"];
+  private first = true;
+  constructor(private readonly continuation: ModelProvider, private readonly call: ModelToolCall) { this.descriptor = continuation.descriptor; }
+  async *generate(request: ModelRequest, context: ModelContext) {
+    if (this.first) { this.first = false; yield { type: "tool-call" as const, call: this.call }; return; }
+    yield* this.continuation.generate(request, context);
+  }
+}
+
 class AsyncQueue<T> implements AsyncIterable<T> { private readonly values: T[] = []; private waiter?: (result: IteratorResult<T>) => void; private closed = false; push(value: T) { if (this.closed) return; if (this.waiter) { const waiter = this.waiter; this.waiter = undefined; waiter({ value, done: false }); } else this.values.push(value); } close() { this.closed = true; this.waiter?.({ value: undefined as T, done: true }); this.waiter = undefined; } [Symbol.asyncIterator]() { return { next: async () => this.values.length ? { value: this.values.shift()!, done: false } : this.closed ? { value: undefined as T, done: true } : new Promise<IteratorResult<T>>((resolve) => { this.waiter = resolve; }) }; } }

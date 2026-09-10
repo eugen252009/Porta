@@ -2,15 +2,19 @@ import { ApprovalProvider, ApprovalRequestedEvent, ApprovalResolvedEvent, Harnes
 
 export type ApprovalPendingRecord = ApprovalRequestedEvent;
 export interface ApprovalPersistence { list(): readonly ApprovalPendingRecord[]; save(record: ApprovalPendingRecord): void; remove(approvalId: string): void }
+export type ApprovalResolutionListener = (event: ApprovalResolvedEvent) => void | Promise<void>;
+export type ApprovalCancellationListener = (sessionId: string) => void | Promise<void>;
 export type PendingApprovalEvent = ApprovalRequestedEvent | ApprovalResolvedEvent;
 export type ApprovalResolution = { decision: "approve" | "deny"; reason?: string };
 interface PendingEntry { readonly event: ApprovalRequestedEvent; readonly request?: ToolApprovalRequest; readonly resolve?: (decision: ToolApprovalDecision) => void; readonly reject?: (error: HarnessFailure) => void }
 
 export class PendingApprovalProvider implements ApprovalProvider {
   private readonly pending = new Map<string, PendingEntry>();
-  private readonly subscribers = new Set<AsyncQueue<PendingApprovalEvent>>();
+  private readonly subscribers = new Set<AsyncQueue<PendingApprovalEvent>>(); private readonly cancellationListeners = new Set<ApprovalCancellationListener>(); private readonly resolutionListeners = new Set<ApprovalResolutionListener>();
   constructor(private readonly persistence?: ApprovalPersistence) { for (const record of persistence?.list() ?? []) if (!this.pending.has(record.approvalId)) this.pending.set(record.approvalId, { event: record }); }
   get pendingCount(): number { return this.pending.size; }
+  onResolved(listener: ApprovalResolutionListener): () => void { this.resolutionListeners.add(listener); return () => this.resolutionListeners.delete(listener); }
+  onCancelled(listener: ApprovalCancellationListener): () => void { this.cancellationListeners.add(listener); return () => this.cancellationListeners.delete(listener); }
   pendingRequests(): readonly ApprovalRequestedEvent[] { return [...this.pending.values()].map(({ event }) => event); }
   async approve(request: ToolApprovalRequest): Promise<ToolApprovalDecision> {
     if (this.pending.has(request.approvalId)) throw failure("CAPABILITY_CONFLICT", `Approval '${request.approvalId}' is already pending.`);
@@ -24,13 +28,13 @@ export class PendingApprovalProvider implements ApprovalProvider {
     const timer = request.context.deadline === undefined ? undefined : setTimeout(() => this.abort(request.approvalId, "TIMEOUT"), Math.max(0, request.context.deadline - Date.now()));
     try { return await promise; } finally { request.context.signal.removeEventListener("abort", onAbort); if (timer !== undefined) clearTimeout(timer); }
   }
-  cancelSession(sessionId: string): void { for (const [approvalId, entry] of this.pending) if (entry.event.sessionId === sessionId) this.abort(approvalId, "CANCELLED"); }
+  cancelSession(sessionId: string): void { let cancelled = false; for (const [approvalId, entry] of this.pending) if (entry.event.sessionId === sessionId) { cancelled = true; this.abort(approvalId, "CANCELLED"); } if (cancelled) for (const listener of this.cancellationListeners) void listener(sessionId); }
   discard(approvalId: string): void { this.abort(approvalId, "CANCELLED"); }
   resolve(approvalId: string, resolution: ApprovalResolution): ApprovalResolvedEvent {
     const entry = this.pending.get(approvalId); if (!entry) throw failure("CAPABILITY_UNAVAILABLE", `Approval '${approvalId}' is not pending.`);
     this.pending.delete(approvalId); this.persistence?.remove(approvalId);
     const { event } = entry; const resolved: ApprovalResolvedEvent = { type: "ApprovalResolved", approvalId, decision: resolution.decision, executionId: event.executionId, sessionId: event.sessionId, traceId: event.traceId, ...(resolution.reason ? { reason: resolution.reason } : {}) };
-    this.publish(resolved); entry.resolve?.({ approved: resolution.decision === "approve", ...(resolution.reason ? { reason: resolution.reason } : {}) }); return resolved;
+    this.publish(resolved); for (const listener of this.resolutionListeners) void listener(resolved); entry.resolve?.({ approved: resolution.decision === "approve", ...(resolution.reason ? { reason: resolution.reason } : {}) }); return resolved;
   }
   subscribe(): AsyncIterable<PendingApprovalEvent> { const queue = new AsyncQueue<PendingApprovalEvent>(); this.subscribers.add(queue); return new Subscription(queue, () => this.subscribers.delete(queue)); }
   private abort(approvalId: string, code: "CANCELLED" | "TIMEOUT") { const entry = this.pending.get(approvalId); if (!entry) return; this.pending.delete(approvalId); this.persistence?.remove(approvalId); entry.reject?.(failure(code, code === "TIMEOUT" ? "Approval exceeded its deadline." : "Approval was cancelled.")); }

@@ -61,6 +61,8 @@ export * from "./deployment.js";
 export * from "./attention.js";
 export * from "./process-runner.js";
 export * from "./persistence-sqlite.js";
+export * from "./execution-persistence.js";
+export * from "./execution-recovery.js";
 export * from "./git.js";
 export * from "./terminal.js";
 export * from "./supervisor.js";
