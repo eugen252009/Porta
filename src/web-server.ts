@@ -20,7 +20,10 @@ import type { DevelopmentTaskQualificationService } from "./development-task-qua
 import type { DevelopmentTaskCreationService } from "./development-task-creation.js";
 import type { TargetPairingService } from "./target-pairing-service.js";
 import type { Principal, DelegatedTaskApplicationService } from "./node-delegation.js";
+import type { IntegrationCredentialStore } from "./integration-auth.js";
+import type { ApplicationEventHub } from "./application-events.js";
 import { RemoteApplicationError, type RemoteApplicationGateway } from "./remote-application.js";
+import { PromptSubmissionError } from "./prompt-submission.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
@@ -29,6 +32,9 @@ export interface WebApplication {
   modelSelection?: ModelSelection;
   tasks?: Pick<TaskStore, "delete" | "get" | "list">;
   delegatedTasks?: DelegatedTaskApplicationService;
+  promptSubmission?: import("./prompt-submission.js").PromptSubmissionService;
+  events?: ApplicationEventHub;
+  integrationAuth?: IntegrationCredentialStore;
   node?: { version: string; name?: string; capabilities: readonly string[] };
   executionTargets?: TargetRegistry;
   targetInvocations?: TargetInvocationService;
@@ -54,6 +60,7 @@ export interface WebServerOptions {
   webRoot?: string;
   targets?: readonly PortaTarget[];
   tls?: { mode: "disabled" | "proxy" | "native"; certificatePath?: string; privateKeyPath?: string };
+  extensionOrigins?: readonly string[];
 }
 
 const contentTypes: Record<string, string> = {
@@ -68,7 +75,7 @@ export function createPortaWebServer(application: WebApplication, options: WebSe
   const uiSessions = application.uiSessions ?? new Map<string, number>();
   const federatedNodeCache = new Map<string, FederatedNodeCache>();
   const tls = options.tls ?? { mode: "disabled" as const };
-  const handler = (request: IncomingMessage, response: ServerResponse) => void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache);
+  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache); };
   const server = tls.mode === "native" ? createNativeTlsServer(tls, handler) : createServer(handler);
   return {
     server,
@@ -114,6 +121,7 @@ async function route(application: WebApplication, webRoot: string, request: Inco
     if (request.method === "GET" && url.pathname === "/identity") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, application.identity.public); return; }
     if (request.method === "GET" && url.pathname === "/login") { if (!application.login) { json(response, 503, { error: "Login unavailable." }); return; } json(response, 200, application.login.challenge()); return; }
     if (request.method === "POST" && url.pathname === "/login") { if (!application.login) { json(response, 503, { error: "Login unavailable." }); return; } try { json(response, 200, application.login.login((await readJson(request)) as { challengeId: string; identity: string; signature: string })); } catch (error) { const message = error instanceof Error ? error.message : "LOGIN_FAILED"; json(response, 401, { error: message }); } return; }
+    if (url.pathname === "/api/events" && request.method === "GET") { if (!principalForRequest(application, request)) { json(response, 401, { error: "AUTH_TOKEN_INVALID" }); return; } response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", Connection: "keep-alive" }); response.write(": connected\n\n"); const unsubscribe = application.events?.subscribe((event) => { if (!response.writableEnded) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); }); request.on("close", () => unsubscribe?.()); return; }
     if (url.pathname.startsWith("/api/")) {
       if (!isAuthenticatedApiRequest(application, request)) { json(response, 401, { error: "AUTH_TOKEN_INVALID" }); return; }
       await api(application, url, request, response, targets, federatedNodeCache);
@@ -128,10 +136,16 @@ async function route(application: WebApplication, webRoot: string, request: Inco
 
 function uiCookie(request: IncomingMessage): string | undefined { return request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("porta_ui="))?.slice("porta_ui=".length); }
 function isUiSessionRequest(application: WebApplication, request: IncomingMessage): boolean { const cookie = uiCookie(request); const expiresAt = cookie ? application.uiSessions?.get(cookie) : undefined; if (!expiresAt || expiresAt <= Date.now()) { if (cookie) application.uiSessions?.delete(cookie); return false; } return true; }
-function isAuthenticatedApiRequest(application: WebApplication, request: IncomingMessage): boolean { const authorization = request.headers.authorization; if (authorization?.startsWith("Bearer ")) return Boolean(application.login?.authenticateToken(authorization.slice(7).trim())); return isUiSessionRequest(application, request); }
+function principalForRequest(application: WebApplication, request: IncomingMessage): Principal | undefined { const authorization = request.headers.authorization; if (authorization?.startsWith("Bearer ")) { const token = authorization.slice(7).trim(); const integration = application.integrationAuth?.authenticate(token); if (integration) return integration; const identity = application.login?.authenticateToken(token); return identity ? { kind: "node", identity } : undefined; } const cookie = uiCookie(request); return isUiSessionRequest(application, request) ? { kind: "human", identity: `web:${cookie ?? "authenticated"}` } : undefined; }
+function isAuthenticatedApiRequest(application: WebApplication, request: IncomingMessage): boolean { return Boolean(principalForRequest(application, request)); }
 
 async function api(application: WebApplication, url: URL, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>): Promise<void> {
-  const principal: Principal = { kind: "human", identity: `web:${uiCookie(request) ?? "authenticated"}` };
+  const principal = principalForRequest(application, request); if (!principal) { json(response, 401, { error: "AUTH_TOKEN_INVALID" }); return; }
+  if (request.method === "GET" && url.pathname === "/api/integrations") { if (principal.kind !== "human" || !application.integrationAuth) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } json(response, 200, { integrations: application.integrationAuth.list() }); return; }
+  if (request.method === "POST" && url.pathname === "/api/integrations") { if (principal.kind !== "human" || !application.integrationAuth) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } const body = await readJson(request); const permissions = Array.isArray(body?.permissions) && body.permissions.every((permission) => typeof permission === "string") ? body.permissions as string[] : []; if (typeof body?.label !== "string" || !permissions.length || permissions.some((permission) => !["nodes.read", "models.read", "prompt.submit"].includes(permission))) { json(response, 400, { error: "Invalid integration credential." }); return; } json(response, 201, application.integrationAuth.create(body.label, permissions)); return; }
+  if (request.method === "DELETE" && url.pathname.startsWith("/api/integrations/")) { if (principal.kind !== "human" || !application.integrationAuth) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } application.integrationAuth.revoke(decodeURIComponent(url.pathname.slice("/api/integrations/".length))); json(response, 200, { revoked: true }); return; }
+  if (request.method === "POST" && url.pathname === "/api/prompt/submit") { const body = await readJson(request); const model = body?.requestedModel && typeof body.requestedModel === "object" ? body.requestedModel as { provider: string; model: string } : undefined; if (!application.promptSubmission || typeof body?.content !== "string" || typeof body?.idempotencyKey !== "string") { json(response, 400, { error: "content and idempotencyKey are required." }); return; } if (principal.kind !== "human" && !(principal.kind === "integration" && application.integrationAuth?.allows(principal, "prompt.submit"))) { json(response, 403, { error: "PROMPT_SUBMIT_NOT_AUTHORIZED" }); return; } try { json(response, 202, await application.promptSubmission.submit({ content: body.content, idempotencyKey: body.idempotencyKey, ...(typeof body.targetNodeId === "string" ? { targetNodeId: body.targetNodeId } : {}), ...(model ? { requestedModel: model } : {}), ...(body.mode === "task" ? { mode: "task" as const } : {}), ...(typeof body.source === "string" ? { source: body.source.slice(0, 80) } : {}) }, principal)); } catch (error) { const status = error instanceof PromptSubmissionError ? (error.kind === "denied" ? 403 : error.kind === "unsupported" ? 404 : error.kind === "unavailable" ? 503 : 409) : 400; json(response, status, { error: error instanceof Error ? error.message : "Prompt submission failed.", kind: error instanceof PromptSubmissionError ? error.kind : "failed" }); } return; }
+  if (principal.kind === "integration") { const required = url.pathname === "/api/nodes" ? "nodes.read" : url.pathname === "/api/models" ? "models.read" : url.pathname === "/api/prompt/submit" ? "prompt.submit" : undefined; if (!required || !application.integrationAuth?.allows(principal, required)) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } }
   if (request.method === "GET" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, { identities: application.identity.listAllowed() }); return; }
   if (request.method === "POST" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const body = await readJson(request) as { identity?: string; publicKey?: string; algorithm?: "ed25519"; displayName?: string }; if (!body.identity || !body.publicKey || body.algorithm !== "ed25519" || !body.displayName) { json(response, 400, { error: "Identity, publicKey, algorithm, and displayName are required." }); return; } application.identity.allow({ identity: body.identity, publicKey: body.publicKey, algorithm: "ed25519" }, body.displayName); json(response, 201, { created: true }); return; }
   if ((request.method === "PATCH" || request.method === "DELETE") && url.pathname.startsWith("/api/identity/allowed/")) { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const id = decodeURIComponent(url.pathname.slice("/api/identity/allowed/".length)); if (request.method === "DELETE") application.identity.remove(id); else application.identity.setEnabled(id, Boolean((await readJson(request) as { enabled?: boolean }).enabled)); json(response, 200, { updated: true }); return; }

@@ -9,7 +9,8 @@ import type { DelegatedTaskAccepted, DelegatedTaskProtocol, DelegatedTaskRequest
 export type Principal =
   | { readonly kind: "human"; readonly identity: string }
   | { readonly kind: "node"; readonly identity: string }
-  | { readonly kind: "local"; readonly identity: string };
+  | { readonly kind: "local"; readonly identity: string }
+  | { readonly kind: "integration"; readonly identity: string; readonly permissions: readonly string[] };
 
 export interface DelegatedTaskApplicationContext {
   readonly identity: string;
