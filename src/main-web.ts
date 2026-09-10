@@ -6,7 +6,7 @@ import { createPortaApplication } from "./porta-application.js";
 import { formatConfigError, loadPortaConfig } from "./porta-config.js";
 import { createPortaWebServer } from "./web-server.js";
 import { buildInfo } from "./build-info.js";
-import { InstanceIdentityStore, LoginService } from "./identity.js";
+import { LoginService } from "./identity.js";
 import { WebAuthnService } from "./webauthn.js";
 
 let application: Awaited<ReturnType<typeof createPortaApplication>> | undefined;
@@ -19,7 +19,7 @@ try {
   const portFlag = process.argv.findIndex((value) => value === "--port"); const port = portFlag >= 0 ? Number(process.argv[portFlag + 1]) : config.web?.port ?? 4173;
   const info = buildInfo(); process.stdout.write(`Porta ${info.version} commit=${info.commit.slice(0, 12)} build=${info.buildId} dirty=${info.dirty ?? "unknown"}\n`);
   application = await createPortaApplication(config, { skipModelHealth: true });
-  const identity = new InstanceIdentityStore(process.env.PORTA_DATA_DIR ?? ".porta");
+  const identity = application.identity;
   const login = new LoginService(identity);
   const webauthn = new WebAuthnService(process.env.PORTA_DATA_DIR ?? ".porta", { rpID: process.env.PORTA_WEBAUTHN_RP_ID ?? "localhost", rpName: process.env.PORTA_WEBAUTHN_RP_NAME ?? "Porta", origin: process.env.PORTA_WEBAUTHN_ORIGIN ?? `http://localhost:${process.env.PORTA_WEB_PORT ?? port}` });
   const uiSessions = new Map<string, number>();

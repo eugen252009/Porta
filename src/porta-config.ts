@@ -63,7 +63,7 @@ export const portaConfigSchema = z.object({
   persistence: z.object({ enabled: z.boolean().default(false), driver: z.literal("sqlite").default("sqlite"), path: z.string().min(1).default(".porta/porta.db"), maxArtifactBytes: z.number().int().positive().default(64 * 1024 * 1024), maxArtifactContextBytes: z.number().int().positive().default(64 * 1024) }).optional(),
   web: webConfigSchema.optional(),
   executionTargets: executionTargetsConfigSchema.default([]).optional(),
-  deployment: z.object({ imageRepository: z.string().min(1), registry: z.string().url().or(z.string().regex(/^[^/]+:\\d+$/)), target: z.string().min(1).default("porta-nas") }).strict().optional(),
+  deployment: z.object({ imageRepository: z.string().min(1), registry: z.string().url().or(z.string().regex(/^[^/]+:\d+$/)), target: z.string().min(1).default("porta-nas") }).strict().optional(),
   providers: providerConfigListSchema.optional(),
 });
 export type PortaConfig = z.infer<typeof portaConfigSchema>;
