@@ -9,10 +9,15 @@ const styles = readFileSync(join(process.cwd(), "web/styles.css"), "utf8");
 describe("Porta greenfield web workspace", () => {
   it("uses sessions as the only primary navigation", () => {
     expect(page).toContain('id="session-tabs"');
+    expect(page).toContain('id="empty-state"');
+    expect(page).toContain('id="workspace"');
     expect(page).not.toContain("session-list");
     expect(page).not.toContain("task-list");
     expect(app).toContain("state.sessions");
     expect(app).toContain("activeSessionId");
+    expect(app).toContain("const hasActiveSession = Boolean(session)");
+    expect(app).toContain("emptyState.hidden = hasActiveSession");
+    expect(app).toContain("workspace.hidden = !hasActiveSession");
     expect(app).toContain("dataset.sessionId = session.id");
     expect(app).toContain("tabsElement.addEventListener(\"click\"");
   });
@@ -42,6 +47,8 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("activateSession(session.id)");
     expect(app).toContain("void activateSession(target.dataset.sessionId)");
     expect(app).toContain("await activateSession(id)");
+    expect(app).toContain("revealActiveWorkspace()");
+    expect(app).toContain("workspace.scrollIntoView");
     expect(app).toContain('reason: "approval_required"');
     expect(app).toContain("resolveApproval");
   });
