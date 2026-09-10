@@ -8,7 +8,7 @@ import { InstanceIdentityStore } from "../src/identity.js";
 import { createPortaNode } from "../src/porta-node.js";
 import { parsePortaConfig } from "../src/porta-config.js";
 import { HttpTargetTransport } from "../src/target-transport.js";
-import { RemoteApplicationGateway } from "../src/remote-application.js";
+import { createNodeApplicationProtocol, RemoteApplicationGateway } from "../src/remote-application.js";
 import { RemoteExecutionTarget, TargetRegistry } from "../src/target.js";
 import { createPortaWebServer } from "../src/web-server.js";
 
@@ -23,6 +23,19 @@ async function setup() {
 }
 
 describe("federated Web control", () => {
+  it("projects remote result history and preserves ownership across protocol restart", async () => {
+    const value = await setup();
+    try {
+      const session = await value.remote.createSession({});
+      await value.remote.submitSession(session.id, "Federated history prompt");
+      const observed = await value.remote.getSession(session.id);
+      expect(observed?.history).toEqual(expect.arrayContaining([{ role: "user", content: "Federated history prompt" }, { role: "assistant", content: "B result" }]));
+      const restartedProtocol = createNodeApplicationProtocol(value.b.application);
+      const afterRestart = await restartedProtocol.getSession(session.id, value.a.identity.public.identity);
+      expect(afterRestart?.history).toEqual(observed?.history);
+    } finally { await value.a.close(); await value.b.close(); await rm(value.root, { recursive: true, force: true }); }
+  });
+
   it("aggregates a known child through application APIs and keeps sessions child-owned", async () => {
     const value = await setup(); const web = createPortaWebServer({ ...value.a.application, uiSessions: new Map([["human", Date.now() + 60_000]]) }, { port: 0 }); await web.listen(); const address = web.server.address(); if (!address || typeof address === "string") throw new Error("web address unavailable");
     try {

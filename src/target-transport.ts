@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { InstanceIdentityStore, LoginService } from "./identity.js";
 import type { ExecutionTargetCapability } from "./target.js";
-import type { JsonValue, ToolContext, ToolProvider, ToolResult, KernelEvent } from "./contracts.js";
+import type { JsonValue, ToolContext, ToolProvider, ToolResult, KernelEvent, ModelMessage } from "./contracts.js";
 import type { GitBackend } from "./git.js";
 import type { ImageAdapter } from "./deployment.js";
 
@@ -22,7 +22,7 @@ export interface DelegatedTaskSnapshot { readonly version: 1; readonly type: "po
 export interface DelegatedTaskProtocol { create(request: DelegatedTaskRequest, parentIdentity: string): Promise<DelegatedTaskAccepted>; get(childTaskId: string, delegationId: string, parentIdentity: string): Promise<DelegatedTaskSnapshot>; cancel(childTaskId: string, delegationId: string, parentIdentity: string): Promise<DelegatedTaskSnapshot>; list?(parentIdentity: string): Promise<readonly unknown[]> }
 export interface NodeApplicationDescription { readonly version: 1; readonly nodeIdentity: string; readonly capabilities: readonly string[]; readonly attentionCount?: number; readonly activeTaskCount?: number }
 export interface NodeTaskSummary { readonly id: string; readonly sessionId: string; readonly status: string; readonly objective: string; readonly updatedAt: string }
-export interface NodeSessionSnapshot { readonly id: string; readonly state: "open" | "closed"; readonly createdAt: string; readonly target?: string; readonly model?: { readonly provider: string; readonly model: string } }
+export interface NodeSessionSnapshot { readonly id: string; readonly state: "open" | "closed"; readonly createdAt: string; readonly target?: string; readonly model?: { readonly provider: string; readonly model: string }; readonly history?: readonly ModelMessage[] }
 export interface NodeApplicationProtocol { describe(): Promise<NodeApplicationDescription>; models(): Promise<readonly unknown[]>; createSession(input: { readonly sessionId?: string; readonly target?: string; readonly model?: { readonly provider: string; readonly model: string } }, principalIdentity: string): Promise<NodeSessionSnapshot>; listSessions(principalIdentity: string): Promise<readonly NodeSessionSnapshot[]>; listTasks(principalIdentity: string): Promise<readonly NodeTaskSummary[]>; getSession(sessionId: string, principalIdentity: string): Promise<NodeSessionSnapshot | undefined>; submitSession(sessionId: string, input: string, principalIdentity: string): Promise<readonly KernelEvent[]>; listDelegatedTasks?(principalIdentity: string): Promise<readonly unknown[]> }
 export interface TargetTransportServerOptions { readonly target: TargetDescription; readonly identity: InstanceIdentityStore; readonly operations: TargetTransport; readonly allowedIdentities?: readonly { readonly identity: string; readonly publicKey: string; readonly algorithm: "ed25519" }[]; readonly pairing?: { consume(token: string): boolean }; readonly delegation?: DelegatedTaskProtocol; readonly application?: NodeApplicationProtocol }
 

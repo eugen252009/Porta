@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PortaApplication } from "./porta-application.js";
 import type { Principal } from "./node-delegation.js";
 import type { DelegatedTaskRequest, DelegatedTaskAccepted, DelegatedTaskSnapshot, HttpTargetTransport, NodeApplicationDescription, NodeApplicationProtocol, NodeSessionSnapshot, NodeTaskSummary, TargetTransportError } from "./target-transport.js";
@@ -27,7 +29,12 @@ export class RemoteApplicationGateway {
 
 /** Server-side adapter: authenticated node requests reach the existing application services. */
 export function createNodeApplicationProtocol(application: PortaApplication): NodeApplicationProtocol {
+  const ownershipPath = join(application.identity.directory, "application-session-owners.json");
   const sessionOwners = new Map<string, string>();
+  if (existsSync(ownershipPath)) {
+    try { for (const [sessionId, owner] of Object.entries(JSON.parse(readFileSync(ownershipPath, "utf8")) as Record<string, string>)) if (typeof owner === "string" && owner) sessionOwners.set(sessionId, owner); } catch { /* fail closed: unreadable ownership state grants no access */ }
+  }
+  const persistOwnership = () => writeFileSync(ownershipPath, JSON.stringify(Object.fromEntries(sessionOwners), null, 2) + "\n", { mode: 0o600 });
   return {
     async describe() { return { version: 1, nodeIdentity: application.identity.public.identity, capabilities: ["delegatedTasks", "models", "sessions", ...(application.localTarget ? ["primitiveExecution"] : [])], attentionCount: application.pendingApprovals.pendingRequests().length, activeTaskCount: (await application.tasks.list()).filter((task) => task.status === "active" || task.status === "blocked").length }; },
     async models() { return application.modelCatalog(); },
@@ -36,17 +43,17 @@ export function createNodeApplicationProtocol(application: PortaApplication): No
       if (input.model && !input.sessionId) await application.resolveModel(`${input.model.provider}/${input.model.model}`);
       const events = []; for await (const event of application.gateway.execute({ type: "CreateSession", ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.target ? { target: input.target } : {}), ...(input.model && !input.sessionId ? { model: input.model } : {}) })) events.push(event);
       const created = events.find((event) => event.type === "SessionCreated"); if (!created || created.type !== "SessionCreated") throw new Error(input.sessionId ? "SESSION_NOT_FOUND" : "SESSION_CREATE_FAILED");
-      sessionOwners.set(created.sessionId, principalIdentity); const session = await application.conversations.getSession(created.sessionId); if (!session) throw new Error("SESSION_CREATE_FAILED"); return sessionSnapshot(session);
+      sessionOwners.set(created.sessionId, principalIdentity); persistOwnership(); const session = await application.conversations.getSession(created.sessionId); if (!session) throw new Error("SESSION_CREATE_FAILED"); return sessionSnapshot(session);
     },
     async listTasks(principalIdentity) { const ownedSessions = new Set([...sessionOwners.entries()].filter(([, owner]) => owner === principalIdentity).map(([sessionId]) => sessionId)); return (await application.tasks.list()).filter((task) => ownedSessions.has(task.sessionId)).map((task) => ({ id: task.id, sessionId: task.sessionId, status: task.status, objective: task.objective.slice(0, 160), updatedAt: task.updatedAt })); },
-    async listSessions(principalIdentity) { const sessions = []; for (const sessionId of application.conversations.openSessionIds()) { if (sessionOwners.get(sessionId) !== principalIdentity) continue; const session = await application.conversations.getSession(sessionId); if (session) sessions.push(sessionSnapshot(session)); } return sessions; },
+    async listSessions(principalIdentity) { const sessions = []; for (const sessionId of application.conversations.openSessionIds()) { if (sessionOwners.get(sessionId) !== principalIdentity) continue; const session = await application.conversations.getSession(sessionId); if (session) sessions.push(await sessionSnapshot(session)); } return sessions; },
     async getSession(sessionId, principalIdentity) { if (sessionOwners.get(sessionId) !== principalIdentity) throw new Error("APPLICATION_ACCESS_DENIED"); const session = await application.conversations.getSession(sessionId); return session ? sessionSnapshot(session) : undefined; },
     async submitSession(sessionId, input, principalIdentity) { if (sessionOwners.get(sessionId) !== principalIdentity) throw new Error("APPLICATION_ACCESS_DENIED"); const events = []; for await (const event of application.gateway.execute({ type: "SubmitInput", sessionId, input })) events.push(event); return events; },
     async listDelegatedTasks(principalIdentity) { return application.delegatedTasks.list({ kind: "node", identity: principalIdentity }); },
   };
 }
 
-function sessionSnapshot(session: { id: string; state: "open" | "closed"; createdAt: string; target?: string; model?: { provider: string; model: string } }): NodeSessionSnapshot { return { id: session.id, state: session.state, createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: session.model } : {}) }; }
+async function sessionSnapshot(session: { id: string; state: "open" | "closed"; createdAt: string; target?: string; model?: { provider: string; model: string }; history?: readonly import("./contracts.js").ModelMessage[] }): Promise<NodeSessionSnapshot> { return { id: session.id, state: session.state, createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: session.model } : {}), ...(session.history?.length ? { history: session.history } : {}) }; }
 function classifyRemoteError(error: unknown): RemoteApplicationError {
   if (error instanceof RemoteApplicationError) return error;
   if (error instanceof TransportError) return new RemoteApplicationError(error.status === 401 || error.status === 403 ? "denied" : error.status === 404 ? "unsupported" : "failed", error.message, error);
