@@ -81,6 +81,7 @@ describe("Porta greenfield web workspace", () => {
     expect(styles).toContain("grid-template-rows:auto minmax(0,1fr) auto");
     expect(styles).toContain("overflow-y:auto");
     expect(styles).toContain("height:100dvh");
+    expect(styles).toContain("[hidden]{display:none!important}");
     expect(page).toContain('tabindex="-1"');
   });
 });
