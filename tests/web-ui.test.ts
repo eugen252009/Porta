@@ -23,6 +23,8 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("workspace.hidden = !hasActiveSession");
     expect(app).toContain("dataset.sessionId = session.id");
     expect(app).toContain("tabsElement.addEventListener(\"click\"");
+    expect(app).toContain('typeof session.sessionId === "string" && session.sessionId');
+    expect(app).toContain('if (!session.sessionId) state.sessions.delete(id)');
   });
 
   it("uses one guarded canonical creation flow", () => {
