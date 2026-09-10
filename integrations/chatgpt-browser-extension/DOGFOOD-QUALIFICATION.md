@@ -10,6 +10,16 @@ Create the temporary scoped credential before starting Porta so the server loads
 
 ```bash
 export PORTA_DATA_DIR=/tmp/porta-browser-dogfood
+export PORTA_CONFIG=/tmp/porta-browser-dogfood-config.json
+node --input-type=module <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+const config = JSON.parse(readFileSync("porta.json", "utf8"));
+config.web = { targets: [], port: 4178 };
+delete config.deployment;
+config.filesystem = { ...(config.filesystem ?? {}), root: "/tmp/porta-browser-dogfood-workspace" };
+config.execution = { enabled: true, allowedCommands: ["node"], filesystem: "deny", network: "deny", codeLoading: "deny" };
+writeFileSync(process.env.PORTA_CONFIG, JSON.stringify(config, null, 2) + "\n");
+NODE
 node --input-type=module -e 'import { IntegrationCredentialStore } from "./dist/src/integration-auth.js"; const created = new IntegrationCredentialStore(`${process.env.PORTA_DATA_DIR}/integrations`).create("local-browser-dogfood", ["nodes.read", "models.read", "prompt.submit"]); process.stdout.write(created.token + "\\n");'
 ```
 
