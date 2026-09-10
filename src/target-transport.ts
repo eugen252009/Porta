@@ -14,7 +14,8 @@ export interface TargetTransport { describe(signal?: AbortSignal): Promise<Targe
 
 export interface TargetAuthenticator { authenticate(targetId: string, challenge: string, signature: string): Promise<boolean> }
 export interface HttpTargetTransportOptions { readonly endpoint: string; readonly clientIdentity: InstanceIdentityStore; readonly fetcher?: typeof fetch }
-export interface TargetTransportServerOptions { readonly target: TargetDescription; readonly identity: InstanceIdentityStore; readonly operations: TargetTransport; readonly allowedIdentities?: readonly { readonly identity: string; readonly publicKey: string; readonly algorithm: "ed25519" }[] }
+export interface TargetPairingRequest { readonly version: 1; readonly type: "porta-target-pairing"; readonly targetId: string; readonly workspaceId: string; readonly pairingToken: string; readonly challengeId: string; readonly signature: string; readonly orchestrator: { readonly identity: string; readonly publicKey: string; readonly algorithm: "ed25519" } }
+export interface TargetTransportServerOptions { readonly target: TargetDescription; readonly identity: InstanceIdentityStore; readonly operations: TargetTransport; readonly allowedIdentities?: readonly { readonly identity: string; readonly publicKey: string; readonly algorithm: "ed25519" }[]; readonly pairing?: { consume(token: string): boolean } }
 
 export class HttpTargetTransport implements TargetTransport {
   private token?: string;
@@ -55,6 +56,8 @@ async function handleTargetRequest(request: IncomingMessage, response: ServerRes
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/target/description") return send(response, 200, options.target);
     if (request.method === "POST" && url.pathname === "/target/auth/challenge") return send(response, 200, login.challenge());
+    if (request.method === "POST" && url.pathname === "/target/pair/challenge" && options.pairing) return send(response, 200, login.challenge());
+    if (request.method === "POST" && url.pathname === "/target/pair" && options.pairing) { const body = await readBody(request) as TargetPairingRequest; if (body.version !== 1 || body.type !== "porta-target-pairing" || body.targetId !== options.target.id || body.workspaceId !== options.target.workspace?.id || !body.orchestrator?.identity || !body.orchestrator.publicKey || !body.challengeId || !body.signature) return send(response, 400, { error: "TARGET_PAIRING_INVALID" }); if (!login.verifyUntrusted({ challengeId: body.challengeId, identity: body.orchestrator.identity, signature: body.signature }, body.orchestrator) || !options.pairing.consume(body.pairingToken)) return send(response, 401, { error: "TARGET_PAIRING_AUTH_FAILED" }); options.identity.allow(body.orchestrator, "paired-orchestrator"); return send(response, 200, { target: options.target, identity: options.identity.public }); }
     if (request.method === "POST" && url.pathname === "/target/auth/verify") { const body = await readBody(request) as { challengeId?: string; identity?: string; signature?: string }; if (!body.challengeId || !body.identity || !body.signature) return send(response, 400, { error: "TARGET_AUTHENTICATION_INVALID" }); try { return send(response, 200, login.login({ challengeId: body.challengeId, identity: body.identity, signature: body.signature })); } catch { return send(response, 401, { error: "TARGET_AUTHENTICATION_FAILED" }); } }
     if (!authenticateRequest(login, request)) return send(response, 401, { error: "TARGET_AUTHENTICATION_REQUIRED" });
     if (request.method === "POST" && url.pathname === "/target/invoke") return send(response, 200, await options.operations.invoke(await readBody(request) as TargetOperationRequest));

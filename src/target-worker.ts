@@ -19,6 +19,7 @@ export interface TargetWorkerOptions {
   readonly allowedCommands?: readonly string[];
   readonly imageRepository?: string;
   readonly registry?: string;
+  readonly pairing?: { consume(token: string): boolean };
   readonly host?: string;
   readonly port?: number;
 }
@@ -35,7 +36,7 @@ export async function startTargetWorker(options: TargetWorkerOptions) {
   const boundary = new WorkspaceBoundary(options.workspaceRoot);
   const operations = new ToolProviderTargetTransport(description, { filesystem, execution, ...(gitAvailable ? { git } : {}), ...(image ? { image } : {}) }, async (path) => { const resolved = await boundary.resolveMutation(path); if (!resolved.exists) throw new Error("File does not exist."); await fs.unlink(resolved.path); return { deleted: path }; });
   const identity = new InstanceIdentityStore(options.identityDirectory);
-  const server = createTargetTransportServer({ target: description, identity, operations, allowedIdentities: options.allowedClientIdentities });
+  const server = createTargetTransportServer({ target: description, identity, operations, allowedIdentities: options.allowedClientIdentities, ...(options.pairing ? { pairing: options.pairing } : {}) });
   const address = await server.listen(options.host ?? "127.0.0.1", options.port ?? 0);
   return { ...server, address, target: description, identity: identity.public };
 }

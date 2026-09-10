@@ -18,6 +18,7 @@ import type { TargetRegistry } from "./target.js";
 import type { TargetInvocationService } from "./target-invocation.js";
 import type { DevelopmentTaskQualificationService } from "./development-task-qualification.js";
 import type { DevelopmentTaskCreationService } from "./development-task-creation.js";
+import type { TargetPairingService } from "./target-pairing-service.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
@@ -30,6 +31,7 @@ export interface WebApplication {
   targetInvocations?: TargetInvocationService;
   developmentQualification?: DevelopmentTaskQualificationService;
   developmentTaskCreation?: DevelopmentTaskCreationService;
+  targetPairing?: TargetPairingService;
   providers?: ProviderRegistry;
   conversations?: import("./contracts.js").ConversationStore;
   pendingApprovals?: Pick<import("./approval-pending.js").PendingApprovalProvider, "pendingRequests">;
@@ -127,6 +129,7 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   if (request.method === "GET" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, { identities: application.identity.listAllowed() }); return; }
   if (request.method === "POST" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const body = await readJson(request) as { identity?: string; publicKey?: string; algorithm?: "ed25519"; displayName?: string }; if (!body.identity || !body.publicKey || body.algorithm !== "ed25519" || !body.displayName) { json(response, 400, { error: "Identity, publicKey, algorithm, and displayName are required." }); return; } application.identity.allow({ identity: body.identity, publicKey: body.publicKey, algorithm: "ed25519" }, body.displayName); json(response, 201, { created: true }); return; }
   if ((request.method === "PATCH" || request.method === "DELETE") && url.pathname.startsWith("/api/identity/allowed/")) { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const id = decodeURIComponent(url.pathname.slice("/api/identity/allowed/".length)); if (request.method === "DELETE") application.identity.remove(id); else application.identity.setEnabled(id, Boolean((await readJson(request) as { enabled?: boolean }).enabled)); json(response, 200, { updated: true }); return; }
+  if (request.method === "POST" && url.pathname === "/api/execution-targets/pair") { try { if (!application.targetPairing) { json(response, 503, { error: "Target pairing is unavailable." }); return; } const payload = await readJson(request) as unknown as import("./target-pairing.js").PairingPayload; json(response, 201, await application.targetPairing.pair(payload)); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Target pairing failed." }); } return; }
   if (request.method === "POST" && url.pathname.startsWith("/api/development-tasks/") && url.pathname.endsWith("/cancel")) { try { const taskId = decodeURIComponent(url.pathname.slice("/api/development-tasks/".length, -"/cancel".length)); if (!application.developmentTaskCreation) { json(response, 503, { error: "Development task creation is unavailable." }); return; } json(response, 200, await application.developmentTaskCreation.cancel(taskId)); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Development task could not be cancelled." }); } return; }
   if (request.method === "POST" && url.pathname === "/api/development-tasks") { try {
     if (!application.developmentTaskCreation) { json(response, 503, { error: "Development task creation is unavailable." }); return; }

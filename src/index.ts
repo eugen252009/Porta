@@ -47,6 +47,8 @@ export * from "./development-task-creation.js";
 export * from "./target.js";
 export * from "./target-transport.js";
 export * from "./target-worker.js";
+export * from "./target-pairing.js";
+export * from "./target-pairing-service.js";
 export * from "./target-invocation.js";
 export * from "./development-task-qualification.js";
 export * from "./deployment.js";

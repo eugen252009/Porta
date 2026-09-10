@@ -14,7 +14,7 @@ import { runDoctor } from "./doctor.js";
 
 const args = process.argv.slice(2);
 if (args.includes("--help") || args.includes("-h")) {
-  process.stdout.write("Porta\n\nUsage:\n  porta [--picker] [--session <id>]\n  porta tui [--session <id>]\n  porta web\n  porta login <provider>\n  porta doctor [--verbose|--json]\n");
+  process.stdout.write("Porta\n\nUsage:\n  porta [--picker] [--session <id>]\n  porta tui [--session <id>]\n  porta serve [--port <port>] [--host <host>]\n  porta --serve [--port <port>] [--network]\n  porta web\n  porta login <provider>\n  porta doctor [--verbose|--json]\n");
   process.exitCode = 0;
 }
 const subcommand = args[0];
@@ -22,6 +22,8 @@ if (process.exitCode === 0 && (args.includes("--help") || args.includes("-h"))) 
   // Help was already written above; do not initialize a model or frontend.
 } else if (subcommand === "doctor") {
   process.exitCode = await runDoctor(args.slice(1));
+} else if (args.includes("--serve")) {
+  process.exitCode = await runFrontend("web", args.filter((arg) => arg !== "--serve"));
 } else if (subcommand === "tui" || subcommand === "web" || subcommand === "serve") {
   process.exitCode = await runFrontend(subcommand, args.slice(1));
 } else {
@@ -29,7 +31,7 @@ if (process.exitCode === 0 && (args.includes("--help") || args.includes("-h"))) 
 }
 
 async function runFrontend(name: "tui" | "web" | "serve", args: readonly string[]): Promise<number> {
-  const entry = join(dirname(fileURLToPath(import.meta.url)), name === "tui" ? "main-tui.js" : "main-web.js");
+  const entry = join(dirname(fileURLToPath(import.meta.url)), name === "tui" ? "main-tui.js" : name === "serve" ? "main-target-worker.js" : "main-web.js");
   return await new Promise((resolve) => {
     const child = spawn(process.execPath, [entry, ...args], { stdio: "inherit" });
     child.once("error", (error) => { process.stderr.write(`Porta ${name} failed to start: ${error.message}\n`); resolve(1); });
