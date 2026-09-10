@@ -1,0 +1,23 @@
+{
+  "model": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "timeoutMs": 120000,
+    "maxResponseBytes": 8388608
+  },
+  "tools": [],
+  "authorization": {
+    "mode": "require-approval"
+  },
+  "filesystem": {
+    "root": "/workspace",
+    "mutation": {
+      "enabled": false
+    }
+  },
+  "persistence": {
+    "enabled": true,
+    "driver": "sqlite",
+    "path": "/data/porta.db"
+  }
+}

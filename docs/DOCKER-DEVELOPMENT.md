@@ -1,72 +1,102 @@
 # Docker development node
 
-This repository includes a disposable Porta development node in `docker-compose.yml`.
+Porta includes a persistent, non-root Docker development node:
 
 ```bash
 docker compose build
 docker compose up -d
 curl http://127.0.0.1:4173/ready
+curl http://127.0.0.1:4173/identity
 ```
 
-Open `http://127.0.0.1:4173` in a browser. The container starts the same Web application as `npm run porta:web`; `--network` makes the listener bind to the container interface while Compose publishes it only on the host loopback interface.
+The default Compose stack contains only Porta. It does not run TPA Hub, expose
+Docker's socket, or contain credentials.
 
-## Configuration paths
+## Responsibility model
 
-Compose mounts the host `./porta.json` read-only at `/config/porta.json`, which is selected by `PORTA_CONFIG`. Paths inside that file are container paths, not paths from the host. For this environment, use at least:
+- **APT during `docker build`** installs trusted system dependencies.
+- **Mema local** provides the pinned Go and Rust/Cargo development toolchains.
+- **TPA Hub** remains an external signed APT repository.
+- **APT** is the normal consumer of published TPA Hub packages; the `tpahub`
+  CLI is not required for normal consumption.
+- **Git** remains the source of truth for projects in `/workspace`.
+- **Porta** owns orchestration, approvals, execution, and persistent state.
 
-```json
-{
-  "filesystem": {
-    "root": "/workspace",
-    "mutation": { "enabled": true }
-  },
-  "persistence": {
-    "enabled": true,
-    "driver": "sqlite",
-    "path": "/data/porta.db"
-  },
-  "git": { "enabled": true },
-  "execution": {
-    "enabled": true,
-    "allowedCommands": ["git", "node", "npm", "python3", "go", "rustc", "cargo"],
-    "filesystem": "allow",
-    "network": "best-effort"
-  }
-}
-```
+## Container configuration and persistence
 
-If `persistence` is omitted, Porta's existing `PORTA_DATA_DIR=/data` fallback enables SQLite at `/data/porta.db`. An explicitly configured persistence path takes precedence, so it must also point into `/data` if the state volume is to contain it.
+Compose uses `porta.docker.json`, not the host-specific `porta.json`. The
+container configuration uses `/workspace` as the filesystem root and
+`/data/porta.db` for SQLite persistence. The host configuration is unchanged.
 
-The checked-in configuration may contain host-specific filesystem paths. Copy or edit it for the container rather than exposing those host paths in the image.
+Named volumes contain:
 
-## Persistent storage
-
-Two named volumes are used:
-
-- `porta-data` → `/data`: SQLite database, node identity, WebAuthn/integration state, and other Porta state.
+- `porta-data` → `/data`: identity, SQLite state, and other Porta state.
 - `porta-workspace` → `/workspace`: repositories and development files.
 
-`docker compose down` does not remove named volumes. To deliberately remove all state, use `docker compose down -v`.
+The standard Mema toolchains are baked into the image under the non-root user's
+local scope. They are deliberately not mounted over by a Mema volume, so an
+old volume cannot hide a newer image's declared toolchain versions. Rebuild the
+image after changing `GO_VERSION` or `RUST_VERSION` in `docker-compose.yml`.
 
-The image creates a non-root `porta` user (UID 10001). The entrypoint fixes ownership of only the writable data and workspace volumes at startup. The configuration mount remains read-only.
+The Mema download cache is used during image construction with a BuildKit cache
+mount and is not runtime state. Runtime-installed extra tools, if needed, are
+user-owned and are not part of the reproducible standard image.
 
-## Git authentication
+## Mema toolchains
 
-Git and `openssh-client` are installed, but no credentials are included in the image. Prefer an SSH agent for local use. For example, expose an agent socket to the container with a local Compose override (do not commit it):
+Mema is built from the pinned revision declared in `Dockerfile`. It is run as
+UID `10001` in local mode:
 
-```yaml
-services:
-  porta:
-    environment:
-      SSH_AUTH_SOCK: /ssh-agent
-    volumes:
-      - ${SSH_AUTH_SOCK}:/ssh-agent
+```text
+/home/porta/.local/share/mema
+/home/porta/.local/bin
 ```
 
-Use a dedicated host key/configuration and confirm the agent only has the intended keys. HTTPS credentials should be provided at runtime through a credential helper or secret, never placed in `porta.json`, the Dockerfile, or the image.
+The image currently installs these exact recipe versions:
 
-The Docker setup deliberately does **not** mount `/var/run/docker.sock`; that socket grants broad control over the host Docker daemon.
+```text
+Go   1.26.5
+Rust 1.97.1
+```
 
-## Network exposure
+Check them as the running user:
 
-The default publication is `127.0.0.1:4173:4173`. To make it reachable from a trusted LAN, change it to `4173:4173` and enforce access with the host firewall or a trusted reverse proxy. Do not publish it directly to the public internet.
+```bash
+docker compose exec porta sh -lc 'id; which mema; mema --help; which go; go version; which rustc; rustc --version; which cargo; cargo --version'
+```
+
+Mema runtime installation remains a user-owned operation and must continue to
+use Porta's existing execution authorization and approval policy. The default
+configuration does not grant arbitrary runtime APT mutation or automatically
+publish packages.
+
+Node remains supplied by the pinned `node:22.19.0-bookworm-slim` base image.
+Python remains a Debian system dependency. Git is installed by APT during the
+image build.
+
+## TPA Hub and APT consumption
+
+TPA Hub is not a service in this Compose topology. A published public TPA Hub
+repository can be consumed by a dedicated consumer image or by an explicit
+build configuration using its public key and standard APT source. No private
+repository is configured by default.
+
+Private consumption requires a repository **reader token**, never a publisher
+token. Supply it only through an approved BuildKit secret or runtime secret
+mechanism. Never put it in `Dockerfile`, `docker-compose.yml`, `porta.json`,
+image layers, or Git.
+
+The normal split is:
+
+```text
+Mema/TPA → .deb → TPA Hub → signed APT repository → apt update/install
+```
+
+The Porta runtime remains non-root; system package changes belong in an image
+build. Do not use agent execution to perform arbitrary runtime `apt install`.
+
+## Git authentication and exposure
+
+Git and the SSH client are installed, but credentials are not included. Prefer
+an explicitly scoped SSH agent or runtime secret. The default API publication
+is `127.0.0.1:4173`; do not expose it directly to the public Internet.

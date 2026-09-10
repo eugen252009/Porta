@@ -3,7 +3,7 @@ set -eu
 
 # Named volumes are commonly created root-owned. Prepare only writable runtime
 # roots; /config may be a read-only single-file bind mount.
-for path in /data /workspace /home/eugen/projekte/Porta; do
+for path in /data /workspace; do
   mkdir -p "$path"
   chown -R porta:porta "$path"
 done

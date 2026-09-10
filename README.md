@@ -89,7 +89,7 @@ docker compose up -d
 curl http://127.0.0.1:4173/ready
 ```
 
-It mounts `./porta.json` read-only at `/config/porta.json`, persists Porta state in the `porta-data` volume at `/data`, and persists repositories in `porta-workspace` at `/workspace`. Container configuration paths must use `/workspace` and `/data`; see [`docs/DOCKER-DEVELOPMENT.md`](docs/DOCKER-DEVELOPMENT.md). The default Web/API publication is localhost-only on port `4173`; do not expose it publicly.
+It mounts the Docker-specific `porta.docker.json` read-only at `/config/porta.json`, persists Porta state in the `porta-data` volume at `/data`, and persists repositories in `porta-workspace` at `/workspace`. Go and Rust/Cargo are installed through pinned Mema local recipes during the image build; Node, Python, Git, and OS dependencies remain APT/base-image responsibilities. TPA Hub remains external and published packages are ordinary APT consumer inputs. See [`docs/DOCKER-DEVELOPMENT.md`](docs/DOCKER-DEVELOPMENT.md). The default Web/API publication is localhost-only on port `4173`; do not expose it publicly.
 
 ### Codex subscription login
 
