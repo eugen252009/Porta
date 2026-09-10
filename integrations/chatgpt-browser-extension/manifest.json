@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "Send a selected ChatGPT assistant artifact to an authorized Porta node.",
   "permissions": ["storage"],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
   "options_page": "options.html",
   "content_scripts": [{
     "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
