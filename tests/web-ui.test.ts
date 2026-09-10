@@ -9,6 +9,9 @@ const styles = readFileSync(join(process.cwd(), "web/styles.css"), "utf8");
 describe("Porta greenfield web workspace", () => {
   it("uses sessions as the only primary navigation", () => {
     expect(page).toContain('id="session-tabs"');
+    expect(page).toContain('id="node-selector"');
+    expect(app).toContain("/api/nodes");
+    expect(app).toContain("selectedNodeId");
     expect(page).toContain('id="empty-state"');
     expect(page).toContain('id="workspace"');
     expect(page).not.toContain("session-list");

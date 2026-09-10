@@ -13,6 +13,7 @@
     <main id="app" class="app-shell" hidden>
       <header class="app-bar">
         <div class="brand"><span class="brand-mark">Porta</span><span class="brand-subtitle">Workspaces</span></div>
+        <label class="node-context"><span>Node</span><select id="node-selector" aria-label="Current Porta node"></select></label>
         <nav id="session-tabs" class="session-tabs" aria-label="Sessions"></nav>
         <div class="global-actions"><button id="attention-button" class="attention-button" type="button" hidden></button><button id="new-session" class="icon-action" type="button" title="New session" aria-label="New session">+</button><button id="open-settings" class="icon-action" type="button" title="Settings" aria-label="Settings">⚙</button><form method="post" action="/auth/logout"><button class="text-action" type="submit">Log out</button></form></div>
       </header>

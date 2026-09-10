@@ -20,6 +20,7 @@ import type { DevelopmentTaskQualificationService } from "./development-task-qua
 import type { DevelopmentTaskCreationService } from "./development-task-creation.js";
 import type { TargetPairingService } from "./target-pairing-service.js";
 import type { Principal, DelegatedTaskApplicationService } from "./node-delegation.js";
+import { RemoteApplicationError, type RemoteApplicationGateway } from "./remote-application.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
@@ -46,6 +47,7 @@ export interface WebApplication {
 }
 
 export interface PortaTarget { id: string; displayName: string; kind: "local" | "remote"; endpoint?: string }
+interface FederatedNodeCache { sourceNodeId: string; lastSeenAt?: string; stale: boolean; description?: import("./target-transport.js").NodeApplicationDescription }
 export interface WebServerOptions {
   host?: string;
   port?: number;
@@ -64,8 +66,9 @@ export function createPortaWebServer(application: WebApplication, options: WebSe
   const webRoot = options.webRoot ?? join(process.cwd(), "web");
   const targets = [{ id: "local", displayName: "Local", kind: "local" as const }, ...(options.targets ?? []).filter((target) => target.id !== "local")];
   const uiSessions = application.uiSessions ?? new Map<string, number>();
+  const federatedNodeCache = new Map<string, FederatedNodeCache>();
   const tls = options.tls ?? { mode: "disabled" as const };
-  const handler = (request: IncomingMessage, response: ServerResponse) => void route({ ...application, uiSessions }, webRoot, request, response, targets);
+  const handler = (request: IncomingMessage, response: ServerResponse) => void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache);
   const server = tls.mode === "native" ? createNativeTlsServer(tls, handler) : createServer(handler);
   return {
     server,
@@ -95,7 +98,7 @@ function createNativeTlsServer(tls: NonNullable<WebServerOptions["tls"]>, handle
   return createSecureServer({ cert: certificate, key: privateKey, allowHTTP1: true }, handler as any);
 }
 
-async function route(application: WebApplication, webRoot: string, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[]): Promise<void> {
+async function route(application: WebApplication, webRoot: string, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/version") { response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(buildInfo())); return; }
@@ -113,13 +116,13 @@ async function route(application: WebApplication, webRoot: string, request: Inco
     if (request.method === "POST" && url.pathname === "/login") { if (!application.login) { json(response, 503, { error: "Login unavailable." }); return; } try { json(response, 200, application.login.login((await readJson(request)) as { challengeId: string; identity: string; signature: string })); } catch (error) { const message = error instanceof Error ? error.message : "LOGIN_FAILED"; json(response, 401, { error: message }); } return; }
     if (url.pathname.startsWith("/api/")) {
       if (!isAuthenticatedApiRequest(application, request)) { json(response, 401, { error: "AUTH_TOKEN_INVALID" }); return; }
-      await api(application, url, request, response, targets);
+      await api(application, url, request, response, targets, federatedNodeCache);
       return;
     }
     await staticFile(webRoot, url.pathname, response);
   } catch (error) {
     if (response.headersSent) response.end();
-    else json(response, 500, { error: error instanceof Error ? error.message : "Request failed." });
+    else { const status = error instanceof RemoteApplicationError ? (error.kind === "denied" ? 403 : error.kind === "unsupported" ? 404 : error.kind === "unavailable" ? 503 : 502) : 500; json(response, status, { error: error instanceof Error ? error.message : "Request failed.", kind: error instanceof RemoteApplicationError ? error.kind : "failed" }); }
   }
 }
 
@@ -127,7 +130,7 @@ function uiCookie(request: IncomingMessage): string | undefined { return request
 function isUiSessionRequest(application: WebApplication, request: IncomingMessage): boolean { const cookie = uiCookie(request); const expiresAt = cookie ? application.uiSessions?.get(cookie) : undefined; if (!expiresAt || expiresAt <= Date.now()) { if (cookie) application.uiSessions?.delete(cookie); return false; } return true; }
 function isAuthenticatedApiRequest(application: WebApplication, request: IncomingMessage): boolean { const authorization = request.headers.authorization; if (authorization?.startsWith("Bearer ")) return Boolean(application.login?.authenticateToken(authorization.slice(7).trim())); return isUiSessionRequest(application, request); }
 
-async function api(application: WebApplication, url: URL, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[]): Promise<void> {
+async function api(application: WebApplication, url: URL, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>): Promise<void> {
   const principal: Principal = { kind: "human", identity: `web:${uiCookie(request) ?? "authenticated"}` };
   if (request.method === "GET" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, { identities: application.identity.listAllowed() }); return; }
   if (request.method === "POST" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const body = await readJson(request) as { identity?: string; publicKey?: string; algorithm?: "ed25519"; displayName?: string }; if (!body.identity || !body.publicKey || body.algorithm !== "ed25519" || !body.displayName) { json(response, 400, { error: "Identity, publicKey, algorithm, and displayName are required." }); return; } application.identity.allow({ identity: body.identity, publicKey: body.publicKey, algorithm: "ed25519" }, body.displayName); json(response, 201, { created: true }); return; }
@@ -150,6 +153,18 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   if (request.method === "GET" && url.pathname.startsWith("/api/execution-invocations/")) { const id = decodeURIComponent(url.pathname.slice("/api/execution-invocations/".length)); const evidence = application.targetInvocations?.get(id); if (!evidence) { json(response, 404, { error: "Invocation was not found." }); return; } json(response, 200, evidence); return; }
   if (request.method === "POST" && url.pathname.startsWith("/api/execution-invocations/") && url.pathname.endsWith("/cancel")) { const id = decodeURIComponent(url.pathname.slice("/api/execution-invocations/".length, -"/cancel".length)); if (!application.targetInvocations?.cancel(id)) { json(response, 404, { error: "Invocation was not found." }); return; } json(response, 202, { cancelled: true, invocationId: id }); return; }
   const targetId = url.searchParams.get("target") ?? "local";
+  if (request.method === "GET" && url.pathname === "/api/nodes") { json(response, 200, { nodes: await federatedNodes(application, targets, federatedNodeCache) }); return; }
+  const remote = targetId === "local" ? undefined : remoteApplicationFor(application, targetId);
+  if (targetId !== "local" && !remote && ["/api/models", "/api/sessions", "/api/delegated-tasks"].some((path) => url.pathname === path || url.pathname.startsWith(`${path}/`))) { json(response, 404, { error: "NODE_NOT_KNOWN" }); return; }
+  if (remote && request.method === "GET" && url.pathname === "/api/models") { json(response, 200, { models: await remote.models() }); return; }
+  if (remote && request.method === "GET" && url.pathname === "/api/sessions") { json(response, 200, { sessions: await remote.listSessions() }); return; }
+  if (remote && request.method === "GET" && url.pathname === "/api/tasks") { json(response, 200, { tasks: await remote.listTasks() }); return; }
+  if (remote && request.method === "POST" && url.pathname === "/api/sessions") { const body = await readJson(request); const model = body?.model && typeof body.model === "object" ? body.model as { provider: string; model: string } : undefined; try { json(response, 200, { type: "SessionCreated", sessionId: (await remote.createSession({ ...(model ? { model } : {}) })).id }); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Remote session creation failed." }); } return; }
+  if (remote && request.method === "GET" && url.pathname.startsWith("/api/sessions/") && !url.pathname.endsWith("/task")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length)); const session = await remote.getSession(sessionId); if (!session) { json(response, 404, { error: "Session was not found." }); return; } json(response, 200, session); return; }
+  if (remote && request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/messages")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/messages".length)); const body = await readJson(request); if (typeof body?.input !== "string" || !body.input.trim()) { json(response, 400, { error: "input is required" }); return; } json(response, 200, await remote.submitSession(sessionId, body.input)); return; }
+  if (remote && request.method === "GET" && url.pathname === "/api/delegated-tasks") { json(response, 200, { tasks: await remote.listDelegatedTasks() }); return; }
+  if (remote && (url.pathname.startsWith("/api/approvals") || url.pathname.startsWith("/api/tasks"))) { json(response, 501, { error: "REMOTE_CAPABILITY_UNSUPPORTED", kind: "unsupported" }); return; }
+  if (remote && url.pathname.startsWith("/api/sessions/") && !(request.method === "GET" && !url.pathname.endsWith("/task")) && !(request.method === "POST" && url.pathname.endsWith("/messages"))) { json(response, 501, { error: "REMOTE_SESSION_OPERATION_UNSUPPORTED", kind: "unsupported" }); return; }
   if (request.method === "GET" && url.pathname === "/api/targets") { json(response, 200, { targets: targets.map(({ endpoint: _endpoint, ...descriptor }) => descriptor) }); return; }
   if (request.method === "GET" && url.pathname === "/api/sessions") {
     const ids = application.conversations?.openSessionIds() ?? [];
@@ -263,6 +278,20 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
 async function collect<T>(source: AsyncIterable<T>): Promise<T[]> { const values: T[] = []; for await (const value of source) values.push(value); return values; }
 async function proxyTarget(endpoint: string, request: IncomingMessage, url: URL, response: ServerResponse): Promise<void> { const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readRaw(request); const targetUrl = new URL(url.pathname + url.search, endpoint.endsWith("/") ? endpoint : `${endpoint}/`); targetUrl.searchParams.delete("target"); try { const result = await fetch(targetUrl, { method: request.method, headers: { "content-type": request.headers["content-type"] ?? "application/json" }, body: body as unknown as BodyInit }); response.statusCode = result.status; for (const [key, value] of result.headers) if (key !== "content-encoding") response.setHeader(key, value); if (result.body) for await (const chunk of result.body as AsyncIterable<Uint8Array>) response.write(chunk); response.end(); } catch { json(response, 502, { error: "Target is unavailable." }); } }
 async function readRaw(request: IncomingMessage): Promise<Uint8Array> { const chunks: Uint8Array[] = []; for await (const chunk of request) chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk); const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0); if (total > 2 * 1024 * 1024) throw new Error("Request body is too large."); const body = new Uint8Array(total); let offset = 0; for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; } return body; }
+function remoteApplicationFor(application: WebApplication, targetId: string): RemoteApplicationGateway | undefined { return application.executionTargets?.resolve(targetId)?.application; }
+async function federatedNodes(application: WebApplication, targets: readonly PortaTarget[], cache: Map<string, FederatedNodeCache>): Promise<readonly unknown[]> {
+  const localTasks = application.tasks ? await application.tasks.list() : [];
+  const local = { id: "local", displayName: "Local", kind: "local", available: true, stale: false, nodeIdentity: application.identity?.public.identity, capabilities: application.node?.capabilities ?? [], attentionCount: application.pendingApprovals?.pendingRequests().length ?? 0, activeTaskCount: localTasks.filter((task) => task.status === "active" || task.status === "blocked").length };
+  const configured = new Map<string, PortaTarget>(targets.filter((entry) => entry.id !== "local").map((entry) => [entry.id, entry]));
+  for (const target of application.executionTargets?.list() ?? []) if (!configured.has(target.id)) configured.set(target.id, { id: target.id, displayName: target.id, kind: "remote" });
+  const remoteNodes = [];
+  for (const target of configured.values()) {
+    const remote = remoteApplicationFor(application, target.id); const prior = cache.get(target.id);
+    try { if (!remote) throw new Error("NODE_NOT_KNOWN"); const description = await remote.describe(); cache.set(target.id, { sourceNodeId: target.id, lastSeenAt: new Date().toISOString(), stale: false, description }); remoteNodes.push({ id: target.id, displayName: target.displayName, kind: "remote", available: true, stale: false, lastSeenAt: new Date().toISOString(), ...description }); }
+    catch (error) { remoteNodes.push({ id: target.id, displayName: target.displayName, kind: "remote", available: false, stale: true, lastSeenAt: prior?.lastSeenAt, ...(prior?.description ?? {}), error: error instanceof Error ? error.message : "NODE_UNAVAILABLE" }); }
+  }
+  return [local, ...remoteNodes];
+}
 async function describeExecutionTargets(registry?: TargetRegistry): Promise<readonly unknown[]> { if (!registry) return []; return Promise.all(registry.list().map(async (target) => { const available = await target.available(); let capabilities: readonly string[] = []; try { capabilities = await target.capabilities(); } catch {} return { id: target.id, kind: target.kind, available, capabilities, ...(target.workspace ? { workspaceId: target.workspace.id } : {}) }; })); }
 
 function json(response: ServerResponse, status: number, value: unknown): void { response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" }); if (status !== 204) response.end(JSON.stringify(value)); else response.end(); }
