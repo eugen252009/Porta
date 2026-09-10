@@ -14,7 +14,7 @@ The extension requests host permission for the configured endpoint. HTTPS is req
 
 ## Security model
 
-The ChatGPT content script only reads standalone rendered assistant code/artifact blocks, injects the explicit user control, and sends narrow typed messages to the extension service worker. If ChatGPT does not expose a confident standalone artifact boundary, no control is injected. The service worker owns endpoint configuration, credential storage, validation, and authenticated HTTP requests. The integration token is never returned to the content script or inserted into the page DOM.
+The ChatGPT content script only reads standalone rendered assistant code/artifact blocks, injects the explicit user control, and sends narrow typed messages to the extension service worker. Artifact discovery is incremental and debounced per assistant candidate; extension-owned mutations are ignored. If ChatGPT does not expose a confident standalone artifact boundary, no control is injected. The service worker owns endpoint configuration, credential storage, validation, and authenticated HTTP requests. The integration token is never returned to the content script or inserted into the page DOM.
 
 The extension does not access SSH, node private keys, filesystems, runtimes, Git, or Docker. It does not submit automatically. Session mappings are stored in extension-owned storage, keyed by Porta endpoint, ChatGPT conversation identity, and target node. The menu also provides an explicit target-specific New session action.
 
