@@ -134,6 +134,7 @@ async function route(application: WebApplication, webRoot: string, request: Inco
   }
 }
 
+function sessionStatus(history: readonly { readonly role?: string }[]): "ready" | "working" | "completed" { const last = history[history.length - 1]; return last?.role === "assistant" ? "completed" : last?.role === "user" ? "working" : "ready" }
 function uiCookie(request: IncomingMessage): string | undefined { return request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("porta_ui="))?.slice("porta_ui=".length); }
 function isUiSessionRequest(application: WebApplication, request: IncomingMessage): boolean { const cookie = uiCookie(request); const expiresAt = cookie ? application.uiSessions?.get(cookie) : undefined; if (!expiresAt || expiresAt <= Date.now()) { if (cookie) application.uiSessions?.delete(cookie); return false; } return true; }
 function principalForRequest(application: WebApplication, request: IncomingMessage): Principal | undefined { const authorization = request.headers.authorization; if (authorization?.startsWith("Bearer ")) { const token = authorization.slice(7).trim(); const integration = application.integrationAuth?.authenticate(token); if (integration) return integration; const identity = application.login?.authenticateToken(token); return identity ? { kind: "node", identity } : undefined; } const cookie = uiCookie(request); return isUiSessionRequest(application, request) ? { kind: "human", identity: `web:${cookie ?? "authenticated"}` } : undefined; }
@@ -190,7 +191,7 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   if (request.method === "GET" && url.pathname === "/api/sessions") {
     const ids = application.conversations?.openSessionIds() ?? [];
     const tasks = application.tasks ? await application.tasks.list() : [];
-    const summaries = await Promise.all(ids.map(async (id) => { const session = await application.conversations?.getSession(id); const task = tasks.find((entry) => entry.sessionId === id); return { sessionId: id, target: session?.target ?? targetId, ...(session?.model ? { model: session.model } : {}), createdAt: session?.createdAt, updatedAt: task?.updatedAt ?? session?.createdAt, state: session?.state, ...(task ? { task: { id: task.id, objective: task.objective.slice(0, 160), status: task.status, ...(task.development ? { phase: task.development.phase, currentAction: task.development.currentAction, attention: task.development.attention ? attentionFor({ status: task.status, reason: task.development.attention.reason }) : attentionFor({ status: task.status }) } : { attention: attentionFor({ status: task.status }) }) } } : {}) }; }));
+    const summaries = await Promise.all(ids.map(async (id) => { const session = await application.conversations?.getSession(id); const task = tasks.find((entry) => entry.sessionId === id); return { sessionId: id, target: session?.target ?? targetId, ...(session?.model ? { model: session.model } : {}), status: task?.status ?? sessionStatus(session?.history ?? []), createdAt: session?.createdAt, updatedAt: task?.updatedAt ?? session?.createdAt, state: session?.state, ...(task ? { task: { id: task.id, objective: task.objective.slice(0, 160), status: task.status, ...(task.development ? { phase: task.development.phase, currentAction: task.development.currentAction, attention: task.development.attention ? attentionFor({ status: task.status, reason: task.development.attention.reason }) : attentionFor({ status: task.status }) } : { attention: attentionFor({ status: task.status }) }) } } : {}) }; }));
     json(response, 200, { sessions: summaries.filter((session) => session.state === "open") }); return;
   }
   if (request.method === "GET" && url.pathname === "/api/approvals/pending") { json(response, 200, { approvals: application.pendingApprovals?.pendingRequests() ?? [] }); return; }
@@ -234,7 +235,7 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
     if (request.method === "GET" && parts.length === 3) {
       const session = await application.conversations?.getSession(sessionId);
       if (!session) { json(response, 404, { error: "Session was not found." }); return; }
-      json(response, 200, { id: session.id, state: session.state, createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: session.model } : {}), history: session.history });
+      json(response, 200, { id: session.id, state: session.state, status: sessionStatus(session.history ?? []), createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: session.model } : {}), history: session.history });
       return;
     }
     if (request.method === "POST" && parts.length === 4 && parts[3] === "messages") {

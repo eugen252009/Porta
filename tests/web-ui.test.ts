@@ -56,6 +56,12 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("resolveApproval");
   });
 
+  it("projects completed sessions during background hydration", () => {
+    expect(app).toContain('status: summary.task?.status || summary.status || existing?.status || "ready"');
+    expect(app).toContain('const snapshot = await jsonFetch(targetUrl(`/api/sessions/${encodeURIComponent(session.sessionId)}`, session.targetId))');
+    expect(app).toContain('if (snapshot.status) session.status = snapshot.status');
+  });
+
   it("uses supported session lifecycle APIs", () => {
     expect(page).toContain('id="stop-session"');
     expect(page).toContain('id="delete-session"');
