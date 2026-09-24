@@ -11,6 +11,7 @@ import { WebAuthnService } from "./webauthn.js";
 
 let application: Awaited<ReturnType<typeof createPortaApplication>> | undefined;
 let webServer: ReturnType<typeof createPortaWebServer> | undefined;
+let apiServer: ReturnType<typeof createPortaWebServer> | undefined;
 try {
   const config = await loadPortaConfig();
   const network = process.argv.includes("--network") || process.env.PORTA_NETWORK === "1";
@@ -24,14 +25,26 @@ try {
   const webauthn = new WebAuthnService(process.env.PORTA_DATA_DIR ?? ".porta", { rpID: process.env.PORTA_WEBAUTHN_RP_ID ?? "localhost", rpName: process.env.PORTA_WEBAUTHN_RP_NAME ?? "Porta", origin: process.env.PORTA_WEBAUTHN_ORIGIN ?? `http://localhost:${process.env.PORTA_WEB_PORT ?? port}` });
   const uiSessions = new Map<string, number>();
   await application.start();
-  webServer = createPortaWebServer({ ...application, identity, login, webauthn, uiSessions }, { port: Number(process.env.PORTA_WEB_PORT ?? port), host: network ? "0.0.0.0" : "127.0.0.1", targets: (config.web?.targets ?? []).map((target) => ({ id: target.id, displayName: target.name, kind: "remote" as const, endpoint: target.endpoint })), webRoot: join(dirname(fileURLToPath(import.meta.url)), "../../web"), tls: { mode: tlsMode, certificatePath: process.env.PORTA_TLS_CERT, privateKeyPath: process.env.PORTA_TLS_KEY }, extensionOrigins: (process.env.PORTA_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean) });
+  const serverApplication = { ...application, identity, login, webauthn, uiSessions };
+  webServer = createPortaWebServer(serverApplication, { port: Number(process.env.PORTA_WEB_PORT ?? port), host: network ? "0.0.0.0" : "127.0.0.1", targets: (config.web?.targets ?? []).map((target) => ({ id: target.id, displayName: target.name, kind: "remote" as const, endpoint: target.endpoint })), webRoot: join(dirname(fileURLToPath(import.meta.url)), "../../web"), tls: { mode: tlsMode, certificatePath: process.env.PORTA_TLS_CERT, privateKeyPath: process.env.PORTA_TLS_KEY }, extensionOrigins: (process.env.PORTA_EXTENSION_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean) });
   await webServer.listen();
+  const apiListen = process.env.PORTA_LLM_API_LISTEN;
+  if (apiListen) {
+    const separator = apiListen.lastIndexOf(":");
+    if (separator <= 0) throw new Error("PORTA_LLM_API_LISTEN must be host:port");
+    const apiHost = apiListen.slice(0, separator);
+    const apiPort = Number(apiListen.slice(separator + 1));
+    if (!Number.isInteger(apiPort) || apiPort <= 0) throw new Error("PORTA_LLM_API_LISTEN must be host:port");
+    apiServer = createPortaWebServer(serverApplication, { port: apiPort, host: apiHost, apiOnly: true, tls: { mode: "disabled" } });
+    await apiServer.listen();
+  }
   process.stdout.write(`${tlsMode === "native" ? "HTTPS" : "HTTP"} listener: ${network ? "0.0.0.0" : "127.0.0.1"}:${process.env.PORTA_WEB_PORT ?? port}\nTLS mode: ${tlsMode}${tlsMode === "native" ? "\nHTTP/2: enabled" : ""}\nWebAuthn origin: ${process.env.PORTA_WEBAUTHN_ORIGIN ?? `${tlsMode === "native" ? "https" : "http"}://localhost:${process.env.PORTA_WEB_PORT ?? port}`}\n`);
   await new Promise<void>((resolve) => { process.once("SIGINT", resolve); process.once("SIGTERM", resolve); });
 } catch (error) {
   process.stderr.write(`Porta web startup failed.\n${error instanceof Error ? error.message : formatConfigError(error)}\n`);
   process.exitCode = 1;
 } finally {
+  await apiServer?.close();
   await webServer?.close();
   await application?.shutdown();
 }

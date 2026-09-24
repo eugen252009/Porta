@@ -28,7 +28,7 @@ export function mapRequestToOllama(request: ModelRequest, model: string): Ollama
     else if (message.role === "assistant") messages.push({ role: "assistant", ...(message.content ? { content: message.content } : {}), ...(message.toolCalls ? { tool_calls: message.toolCalls.map((call) => ({ function: { name: [...mapping.entries()].find(([, id]) => id === call.toolId)?.[0] ?? call.toolId, arguments: call.input } })) } : {}) });
     else messages.push({ role: "tool", content: serializeToolResult(message.result), tool_name: [...mapping.entries()].find(([, id]) => id === message.toolId)?.[0] ?? message.toolId });
   }
-  return { model, messages, stream: true, ...(tools.length ? { tools } : {}) };
+  return { model, messages, stream: true, ...(request.temperature === undefined ? {} : { options: { temperature: request.temperature } }), ...(tools.length ? { tools } : {}) };
 }
 
 export function mapOllamaChunk(value: unknown, mapping: ReadonlyMap<string, string> = new Map(), callIndex = 0): ModelEvent | undefined {
@@ -139,7 +139,7 @@ export function createOllamaPlugin(provider: OllamaModelProvider): HarnessPlugin
 }
 
 interface OllamaToolDefinition { type: "function"; function: { name: string; description: string; parameters: JsonValue } }
-interface OllamaChatRequest { model: string; messages: readonly OllamaMessage[]; stream: true; tools?: readonly OllamaToolDefinition[] }
+interface OllamaChatRequest { model: string; messages: readonly OllamaMessage[]; stream: true; options?: { temperature: number }; tools?: readonly OllamaToolDefinition[] }
 type OllamaMessage = { role: "system" | "user" | "assistant" | "tool"; content?: string; tool_name?: string; tool_calls?: readonly { function: { name: string; arguments: JsonValue } }[] };
 function serializeToolResult(result: { output: JsonValue; error?: unknown }): string { return JSON.stringify(result.error ? { error: result.error, output: result.output } : result.output); }
 function isJsonValue(value: unknown): value is JsonValue { return value === null || typeof value === "string" || typeof value === "number" && Number.isFinite(value) || typeof value === "boolean" || Array.isArray(value) && value.every(isJsonValue) || typeof value === "object" && value !== null && Object.values(value).every(isJsonValue); }

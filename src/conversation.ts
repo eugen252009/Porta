@@ -5,7 +5,7 @@ export class MemoryConversationStore implements ConversationStore {
   constructor(private readonly budget: ConversationBudget = {}) {}
   createSession(session: ConversationSession): Promise<void> {
     if (this.sessions.has(session.id)) throw new HarnessFailure({ code: "CAPABILITY_CONFLICT", message: `Session '${session.id}' already exists.`, retryable: false });
-    this.sessions.set(session.id, { session: { schemaVersion: 1, id: session.id, state: session.state, createdAt: session.createdAt }, turns: session.turns.map(cloneTurn) });
+    this.sessions.set(session.id, { session: { schemaVersion: 1, id: session.id, state: session.state, createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: clone(session.model) } : {}) }, turns: session.turns.map(cloneTurn) });
     return Promise.resolve();
   }
   async getSession(id: string): Promise<ConversationSession | undefined> {

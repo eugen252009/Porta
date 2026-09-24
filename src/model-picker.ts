@@ -3,6 +3,7 @@ import process from "node:process";
 import { ModelOption, ModelProvider } from "./contracts.js";
 import { codexModelOptions } from "./adapters/model-openai-codex.js";
 import { PortaConfig } from "./porta-config.js";
+import { withModelIdentity } from "./model-identity.js";
 
 export interface ModelPickerOptions {
   input?: NodeJS.ReadableStream;
@@ -15,9 +16,10 @@ export async function fetchAvailableModelOptions(provider: "ollama" | "openai-co
       const root = (baseUrl || "http://localhost:11434").replace(/\/+$/, "");
       const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
       if (res.ok) {
-        const json = (await res.json()) as { models?: Array<{ name?: string; model?: string }> };
-        const names = (json.models ?? []).map((m) => m.name || m.model).filter((n): n is string => Boolean(n));
-        if (names.length > 0) return names.map((id) => ({ id, displayName: id, provider }));
+        const json = (await res.json()) as { models?: Array<{ name?: string; model?: string; capabilities?: string[]; details?: { capabilities?: string[] } }> };
+        const models: ModelOption[] = [];
+        for (const m of json.models ?? []) { const id = m.name || m.model; if (!id) continue; const capabilities = m.capabilities ?? m.details?.capabilities; models.push({ id, displayName: id, provider, ...(capabilities ? { capabilities: { tools: capabilities.includes("tools"), streaming: true } } : {}) }); }
+        if (models.length > 0) return models.map((model) => withModelIdentity(model));
       }
     } else if (provider === "openai-compatible") {
       const root = (baseUrl || "http://127.0.0.1:8080").replace(/\/+$/, "");
@@ -26,7 +28,7 @@ export async function fetchAvailableModelOptions(provider: "ollama" | "openai-co
       if (res.ok) {
         const json = (await res.json()) as { data?: Array<{ id?: string }> };
         const names = (json.data ?? []).map((m) => m.id).filter((n): n is string => Boolean(n));
-        if (names.length > 0) return names.map((id) => ({ id, displayName: id, provider }));
+        if (names.length > 0) return names.map((id) => withModelIdentity({ id, displayName: id, provider }));
       }
     } else {
       return codexModelOptions;

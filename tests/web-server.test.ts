@@ -39,6 +39,10 @@ describe("Porta web server", () => {
       const page = await fetch(`http://127.0.0.1:${address.port}/`);
       expect(page.status).toBe(200);
       expect(await page.text()).toContain("Porta");
+      const favicon = await fetch(`http://127.0.0.1:${address.port}/favicon.svg`);
+      expect(favicon.status).toBe(200);
+      expect(favicon.headers.get("content-type")).toBe("image/svg+xml");
+      expect(await favicon.text()).toContain('text-anchor="middle">p</text>');
 
       const models = await fetch(`http://127.0.0.1:${address.port}/api/models`, { headers: { cookie: uiCookie } });
       expect(await models.json()).toEqual({ provider: "ollama", status: "available", current: { provider: "ollama", model: "initial" }, models: [{ provider: "ollama", id: "initial", displayName: "Initial" }, { provider: "ollama", id: "next", displayName: "Next" }] });

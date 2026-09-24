@@ -10,9 +10,11 @@ const inputSchema = z.object({ command: z.string().min(1), args: z.array(z.strin
 
 export class ExecutionToolProvider implements ToolProvider {
   readonly providerId = "execution";
+  readonly sandboxCapabilities: SandboxProvider["capabilities"];
+  readonly sandboxId: string;
   private readonly boundary: WorkspaceBoundary;
   private readonly coordinator: RuntimeCoordinator;
-  constructor(private readonly runtime: RuntimeHost, private readonly sandbox: SandboxProvider, private readonly config: ExecutionProviderConfig) { this.boundary = new WorkspaceBoundary(config.workspaceRoot); this.coordinator = new RuntimeCoordinator(runtime, sandbox); }
+  constructor(private readonly runtime: RuntimeHost, private readonly sandbox: SandboxProvider, private readonly config: ExecutionProviderConfig) { this.sandboxCapabilities = sandbox.capabilities; this.sandboxId = sandbox.descriptor.id; this.boundary = new WorkspaceBoundary(config.workspaceRoot); this.coordinator = new RuntimeCoordinator(runtime, sandbox); }
   async listTools(_context: ToolContext): Promise<readonly ToolDescriptor[]> { return [{ id: "run", name: "execution/run", version: "1", description: "Run one explicitly structured workspace command using command plus argv args. No shell is used. Inspect exitCode, stdout, and stderr; a nonzero exit is a normal process result.", inputSchema: { type: "object", required: ["command"], properties: { command: { type: "string" }, args: { type: "array", items: { type: "string" } }, cwd: { type: "string" }, timeoutMs: { type: "integer" }, environment: { type: "object" } } } }]; }
   async invoke(request: ToolInvocation, context: ToolContext): Promise<ToolResult> {
     const parsed = inputSchema.safeParse(request.input); if (!parsed.success) return invalid(parsed.error.issues); const input = parsed.data;

@@ -5,10 +5,34 @@ import { describe, expect, it } from "vitest";
 const app = readFileSync(join(process.cwd(), "web/app.js"), "utf8");
 const page = readFileSync(join(process.cwd(), "web/index.html"), "utf8");
 const styles = readFileSync(join(process.cwd(), "web/styles.css"), "utf8");
+const favicon = readFileSync(join(process.cwd(), "web/favicon.svg"), "utf8");
+const landing = readFileSync(join(process.cwd(), "web/landing.html"), "utf8");
 
 describe("Porta greenfield web workspace", () => {
+  it("reuses the existing Porta P mark as an SVG favicon on both entry pages", () => {
+    expect(page).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg">');
+    expect(landing).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg">');
+    expect(page).toContain('<span class="brand-symbol" aria-hidden="true">p</span>');
+    expect(styles).toContain("width: 29px; height: 33px");
+    expect(styles).toContain("background: var(--accent); color: #fff; font: italic 29px Georgia, serif");
+    expect(favicon).toContain('fill="#3f604b"');
+    expect(favicon).toContain('font-family="Georgia, \'Times New Roman\', serif"');
+    expect(favicon).toContain('font-style="italic"');
+    expect(favicon).toContain('text-anchor="middle">p</text>');
+    expect((favicon.match(/<text /g) ?? [])).toHaveLength(1);
+  });
+
+  it("uses one conversational composer without a mode selector", () => {
+    expect(page).toContain('id="composer"');
+    expect(page).not.toContain('id="composer-mode"');
+    expect(app).not.toContain("composerMode");
+    expect(app).not.toContain("chatModelFacingDescriptors");
+  });
+
   it("uses sessions as the only primary navigation", () => {
     expect(page).toContain('id="session-tabs"');
+    expect(page).toContain("Start a new chat");
+    expect(app).toContain('else { await openNewSession("local", state.defaultModelRef); }');
     expect(page).toContain('id="node-selector"');
     expect(app).toContain("/api/nodes");
     expect(app).toContain("selectedNodeId");
@@ -24,23 +48,31 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("dataset.sessionId = session.id");
     expect(app).toContain("tabsElement.addEventListener(\"click\"");
     expect(app).toContain('typeof session.sessionId === "string" && session.sessionId');
-    expect(app).toContain('if (!session.sessionId) state.sessions.delete(id)');
+    expect(app).toContain(".sort((a, b) =>");
+    expect(app).toContain('await openNewSession("local", state.defaultModelRef)');
+    expect(app).toContain('!session.sessionId || (refreshedTargets.has(session.targetId) && !discoveredIds.has(id))');
   });
 
   it("uses one guarded canonical creation flow", () => {
-    expect(app).toContain("async function createSession(targetId, model)");
-    expect(app).toContain("await createSession(targetId || \"local\", model || undefined)");
+    expect(app).toContain("async function createSession(targetId, model, workspaceOptions = {})");
+    expect(app).toContain("await createSession(targetId || \"local\", model || undefined, workspaceOptions)");
+    expect(app).toContain("function newWorkspaceOptions()");
+    expect(app).toContain("deleteActiveSession(\"keep\")");
+    expect(app).toContain("deleteActiveSession(\"delete\")");
     expect(app).toContain("state.creatingSession");
     expect(app).toContain("sessionCreateError.hidden = false");
     expect(app).toContain("activeSessionId = id");
   });
 
   it("keeps target and model context on the active session", () => {
-    expect(page).toContain('id="session-target"');
-    expect(page).toContain('id="session-model"');
+    expect(page).toContain('id="session-target-label"');
+    expect(page).toContain('id="session-model-label"');
     expect(app).toContain("session.targetId");
     expect(app).toContain("session.model");
-    expect(app).toContain("openNewSession(session.targetId, sessionModel.value)");
+    expect(app).toContain("sessionTargetLabel.textContent = targetLabel(session.targetId)");
+    expect(app).toContain("sessionModelLabel.textContent = modelDisplay(session.model)");
+    expect(app).not.toContain('$("#session-target")');
+    expect(app).not.toContain('$("#session-model")');
     expect(app).toContain('targetUrl(`/api/sessions/${encodeURIComponent(session.sessionId)}/messages`, session.targetId)');
   });
 
@@ -59,8 +91,10 @@ describe("Porta greenfield web workspace", () => {
   });
 
   it("projects completed sessions during background hydration", () => {
-    expect(app).toContain('status: summary.task?.status || summary.status || existing?.status || "ready"');
-    expect(app).toContain('const snapshot = await jsonFetch(targetUrl(`/api/sessions/${encodeURIComponent(session.sessionId)}`, session.targetId))');
+    expect(app).toContain('status: summary.job?.status || summary.task?.status || summary.status || existing?.status || "ready"');
+    expect(app).toContain('const snapshot = await jsonFetch(targetUrl(');
+    expect(app).toContain('session.selectedJobId');
+    expect(page).toContain('id="session-job"');
     expect(app).toContain('if (snapshot.status) session.status = snapshot.status');
   });
 
@@ -70,6 +104,15 @@ describe("Porta greenfield web workspace", () => {
     expect(app).toContain("/api/sessions/${encodeURIComponent(session.sessionId)}/cancel");
     expect(app).toContain("/api/sessions/${encodeURIComponent(session.sessionId)}");
     expect(app).toContain("Its history will be retained");
+  });
+
+  it("closes the session menu on outside click, Escape, and selection", () => {
+    expect(page).toContain('class="session-menu"');
+    expect(app).toContain("function closeSessionMenu()");
+    expect(app).toContain('document.addEventListener?.("pointerdown"');
+    expect(app).toContain('document.addEventListener?.("keydown"');
+    expect(app).toContain('if (event.key === "Escape") closeSessionMenu()');
+    expect(app).toContain('sessionMenu?.addEventListener("click"');
   });
 
   it("keeps authentication, settings, composer, and responsive layout", () => {

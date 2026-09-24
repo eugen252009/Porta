@@ -12,6 +12,7 @@ import { OpenAICompatibleModelProvider } from "../src/adapters/model-openai-comp
 import { ToolContext, kernelEventSchema } from "../src/index.js";
 import { MockToolProvider } from "../src/tool-mocks.js";
 import { ToolRouter } from "../src/tools.js";
+import { MemoryConversationStore } from "../src/conversation.js";
 
 const context = (signal = new AbortController().signal, deadline?: number): ToolContext => ({ traceId: "trace", sessionId: "session", executionId: "execution", signal, deadline });
 const modelScript = (id: string, toolId = "provider/echo") => [[{ type: "tool" as const, id, toolId, input: { value: id } }], [{ type: "text" as const, text: "continued" }]];
@@ -20,6 +21,17 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> { const values
 async function nextUntil<T extends { type: string }>(iterator: AsyncIterator<T>, type: string): Promise<T> { for (;;) { const item = await iterator.next(); if (item.done) throw new Error(`Expected ${type}`); if (item.value.type === type) return item.value; } }
 
 describe("interactive approval gateway", () => {
+  it("omits model tools when the selected model explicitly does not support them", async () => {
+    const model = new ScriptedToolModelProvider([[{ type: "text", text: "hello" }]]);
+    const tools = new ToolRouter(); await tools.register("provider", new MockToolProvider("provider"), context());
+    const conversations = new MemoryConversationStore();
+    const gateway = new InteractiveApprovalGateway(model, tools, new PendingApprovalProvider(), new StaticToolAuthorizationPolicy("allow"), undefined, conversations);
+    const created = (await collect(gateway.execute({ type: "CreateSession", model: { provider: "ollama", model: "small", capabilities: { tools: false } } })))[0] as { sessionId: string };
+    expect((await conversations.getSession(created.sessionId))?.model?.capabilities?.tools).toBe(false);
+    const events = await collect(gateway.execute({ type: "SubmitInput", sessionId: created.sessionId, input: "hey" }));
+    expect(events.some((event) => event.type === "ExecutionCompleted")).toBe(true);
+    expect(model.received[0]?.tools).toEqual([]);
+  });
   it("keeps execution pending, then approves exactly once through the command", async () => {
     const { gateway, pending, provider, sessionId } = await setup(); const stream = gateway.execute({ type: "SubmitInput", sessionId, input: "input" }); const iterator = stream[Symbol.asyncIterator](); const requested = await nextUntil(iterator, "ApprovalRequested") as Extract<import("../src/index.js").KernelEvent, { type: "ApprovalRequested" }>; expect(requested.approvalId).toBeTruthy(); expect(pending.pendingCount).toBe(1); expect(provider.calls).toHaveLength(0);
     kernelEventSchema.parse(requested); const before = await Promise.race([iterator.next().then(() => "event"), new Promise((resolve) => setTimeout(() => resolve("pending"), 10))]); expect(before).toBe("pending"); const command = await collect(gateway.execute({ type: "ResolveApproval", approvalId: requested.approvalId, decision: "approve" })); expect(command[0]).toMatchObject({ type: "ApprovalResolved", approvalId: requested.approvalId, decision: "approve" }); kernelEventSchema.parse(command[0]); const events = await collect({ [Symbol.asyncIterator]: () => iterator }); expect(events.map((event) => event.type)).toContain("ToolCompleted"); expect(provider.calls).toHaveLength(1); expect(pending.pendingCount).toBe(0);

@@ -17,7 +17,7 @@ export class ToolRouter {
       localIds.add(descriptor.id);
       const canonicalId = `${providerId}/${descriptor.id}`;
       if (this.tools.has(canonicalId)) throw failure("CAPABILITY_CONFLICT", `Canonical tool '${canonicalId}' is already registered.`);
-      const canonical = deepFreeze({ ...descriptor, providerId, canonicalId });
+      const canonical = deepFreeze({ ...descriptor, capabilities: descriptor.capabilities ?? capabilitiesForTool(providerId, descriptor.id), providerId, canonicalId });
       this.tools.set(canonicalId, { provider, descriptor: canonical });
     }
     this.providers.set(providerId, provider);
@@ -40,6 +40,16 @@ export class ToolRouter {
       return { ok: false, error: { code: context.signal.aborted ? "CANCELLED" : context.deadline !== undefined && context.deadline <= Date.now() ? "TIMEOUT" : "TOOL_FAILED", message: error instanceof Error ? error.message : "Tool invocation failed.", retryable: false } };
     }
   }
+}
+
+function capabilitiesForTool(providerId: string, toolId: string): readonly string[] {
+  if (providerId === "scratchpad") return toolId === "write" || toolId === "append" ? ["scratchpad.write"] : ["scratchpad.read"];
+  if (providerId === "filesystem") return toolId === "write_file" || toolId === "patch_file" ? ["filesystem.write"] : ["filesystem.read"];
+  if (providerId === "execution") return ["process.execute", "filesystem.read"];
+  if (providerId === "task") return ["task.read", "task.write"];
+  if (providerId === "artifact") return ["artifact.read", "artifact.write"];
+  if (providerId === "git") return ["git.read", "git.write"];
+  return [`${providerId}.${toolId}`];
 }
 
 function deepFreeze<T>(value: T): T {

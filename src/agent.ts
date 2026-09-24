@@ -13,7 +13,21 @@ export interface AgentAuthorizationOptions { policy?: ToolAuthorizationPolicy; a
 export class AgentOrchestrator {
   constructor(private readonly model: ModelProvider, private readonly tools?: ToolRouter, private readonly limits: AgentLimits = { maxSteps: 8, maxToolCalls: 16 }, private readonly authorization: AgentAuthorizationOptions = {}) {}
   create(input: string, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], history: readonly ModelMessage[] = [], control: readonly ModelControlMessage[] = [], executionId?: string): AgentExecution { return new ManagedAgent(this.model, this.tools, this.limits, this.authorization, input, context, descriptors, history, control, executionId); }
-  createRecovered(state: DurableExecution, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], control: readonly ModelControlMessage[] = []): AgentExecution { const recoveredModel: ModelProvider = new RecoveredModel(this.model, state.currentToolCall!); return new ManagedAgent(recoveredModel, this.tools, this.limits, { policy: new AllowAllToolAuthorizationPolicy() }, state.input, context, descriptors, state.history, control, state.executionId); }
+  createRecovered(state: DurableExecution, context: ModelContext, descriptors: readonly ToolDescriptor[] = [], control: readonly ModelControlMessage[] = []): AgentExecution {
+    const call = state.currentToolCall!;
+    const recoveredModel: ModelProvider = new RecoveredModel(this.model, call);
+    const baseline = this.authorization.policy ?? new AllowAllToolAuthorizationPolicy();
+    let approvedCallAvailable = true;
+    const policy: ToolAuthorizationPolicy = { async authorize(request) {
+      const decision = await baseline.authorize(request);
+      if (approvedCallAvailable && request.toolCallId === call.id && request.invocation.toolId === call.toolId && JSON.stringify(request.invocation.input) === JSON.stringify(call.input)) {
+        approvedCallAvailable = false;
+        return decision === "deny" ? "deny" : "allow";
+      }
+      return decision;
+    } };
+    return new ManagedAgent(recoveredModel, this.tools, this.limits, { ...this.authorization, policy }, state.input, context, descriptors, state.history, control, state.executionId);
+  }
 }
 
 class ManagedAgent implements AgentExecution {

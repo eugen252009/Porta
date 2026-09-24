@@ -1,0 +1,33 @@
+{
+  "model": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "timeoutMs": 120000,
+    "maxResponseBytes": 8388608
+  },
+  "tools": [],
+  "authorization": { "mode": "require-approval" },
+  "agent": { "maxSteps": 64, "maxToolCalls": 256 },
+  "jobs": {
+    "timeoutMs": 1800000,
+    "maxQueued": 32,
+    "unattendedTools": [
+      "filesystem/read_file", "filesystem/list_directory", "filesystem/stat", "filesystem/search",
+      "filesystem/write_file", "filesystem/patch_file", "execution/run",
+      "git/status", "git/diff", "git/show", "git/log",
+      "task/create", "task/get", "task/update",
+      "scratchpad/write", "scratchpad/append", "scratchpad/read", "scratchpad/list",
+      "artifact/list", "artifact/stat", "artifact/read", "artifact/search"
+    ]
+  },
+  "filesystem": { "root": "/workspace", "mutation": { "enabled": true } },
+  "execution": {
+    "enabled": true,
+    "allowedCommands": ["git", "go", "node", "npm", "python3", "rustc", "cargo", "mema"],
+    "filesystem": "allow", "network": "allow", "codeLoading": "allow",
+    "sandbox": { "preference": ["sandbox.host-process"] }
+  },
+  "git": { "enabled": true },
+  "persistence": { "enabled": true, "driver": "sqlite", "path": "/data/porta.db" },
+  "web": { "targets": [], "port": 4173 }
+}

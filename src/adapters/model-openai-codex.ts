@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { failure, HarnessFailure, jsonValueSchema, type HarnessPlugin, type HealthCheckable, type HealthStatus, type JsonValue, type ModelContext, type ModelDescriptor, type ModelOption, type ModelEvent, type ModelProvider, type ModelRequest, type ModelToolCall } from "../contracts.js";
-import { CodexAuth, codexLoginHint, type CodexAuthSource } from "./codex-auth.js";
+import { CodexAuth, codexLoginHint, codexProviderModelCatalog, type CodexAuthSource } from "./codex-auth.js";
+import { withModelIdentity } from "../model-identity.js";
 
 export const openAICodexModelProviderConfigSchema = z.object({
   model: z.string().min(1),
@@ -9,16 +10,8 @@ export const openAICodexModelProviderConfigSchema = z.object({
   maxResponseBytes: z.number().int().positive().max(64 * 1024 * 1024).default(8 * 1024 * 1024),
 });
 export type OpenAICodexModelProviderConfig = z.input<typeof openAICodexModelProviderConfigSchema>;
-/** Provider-owned fallback catalog used when the subscription API does not expose model discovery. */
-export const codexModelOptions: readonly ModelOption[] = [
-  { id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", provider: "openai-codex" },
-  { id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", provider: "openai-codex" },
-  { id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", provider: "openai-codex" },
-  { id: "gpt-5.6-astra", displayName: "GPT-5.6 Astra", provider: "openai-codex" },
-  { id: "gpt-4o", displayName: "GPT-4o", provider: "openai-codex" },
-  { id: "o3-mini", displayName: "o3-mini", provider: "openai-codex" },
-  { id: "gpt-4o-mini", displayName: "GPT-4o mini", provider: "openai-codex" },
-];
+/** Shared provider catalog: raw model IDs and names come from the installed Codex provider. */
+export const codexModelOptions: readonly ModelOption[] = codexProviderModelCatalog.map((entry) => withModelIdentity({ id: entry.id, displayName: entry.displayName, provider: "openai-codex" }));
 export type CodexFetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 const capabilities = [{ id: "model.text", version: "1" }, { id: "model.streaming", version: "1" }, { id: "model.tools", version: "1" }];
 const endpoint = "https://chatgpt.com/backend-api/codex/responses";
@@ -30,9 +23,9 @@ export function mapRequestToCodex(request: ModelRequest, model: string): JsonVal
   const names = new Map((request.tools ?? []).map((tool, index) => [tool.id, `harness_tool_${index}`]));
   const name = (id: string) => names.get(id) ?? `unavailable_${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
   const input: JsonValue[] = [];
-  if (!request.messages?.length) input.push({ role: "user", content: request.input });
+  if (!request.messages?.length) input.push({ role: "user", content: [{ type: "input_text", text: request.input }] });
   for (const message of request.messages ?? []) {
-    if (message.role === "user") input.push({ role: "user", content: message.content });
+    if (message.role === "user") input.push({ role: "user", content: [{ type: "input_text", text: message.content }] });
     else if (message.role === "assistant") {
       if (message.content) input.push({ role: "assistant", content: [{ type: "output_text", text: message.content }] });
       for (const call of message.toolCalls ?? []) input.push({ type: "function_call", call_id: nativeCallId(call.id), name: name(call.toolId), arguments: JSON.stringify(call.input) });
@@ -40,8 +33,9 @@ export function mapRequestToCodex(request: ModelRequest, model: string): JsonVal
   }
   return {
     model, instructions: (request.control ?? []).map((message) => message.content).join("\n\n") || "You are a helpful assistant.",
-    input, store: false, stream: true, parallel_tool_calls: false,
-    tools: (request.tools ?? []).map((tool) => ({ type: "function", name: name(tool.id), description: tool.description ?? tool.name, parameters: tool.inputSchema, strict: false })),
+    input, store: false, stream: true, parallel_tool_calls: true, text: { verbosity: "low" }, include: ["reasoning.encrypted_content"],
+    ...(request.tools?.length ? { tool_choice: "auto", tools: request.tools.map((tool) => ({ type: "function", name: name(tool.id), description: tool.description ?? tool.name, parameters: tool.inputSchema, strict: false })) } : {}),
+
   };
 }
 
@@ -76,11 +70,17 @@ export class OpenAICodexModelProvider implements ModelProvider, HealthCheckable 
       control.signal.throwIfAborted();
       response = await this.fetchLike(endpoint, {
         method: "POST", redirect: "error", signal: control.signal,
-        headers: { "content-type": "application/json", accept: "text/event-stream", authorization: `Bearer ${credential.access}`, "chatgpt-account-id": credential.accountId, "OpenAI-Beta": "responses=experimental", originator: "porta" }, body,
+        headers: { "content-type": "application/json", accept: "text/event-stream", authorization: `Bearer ${credential.access}`, "chatgpt-account-id": credential.accountId, "OpenAI-Beta": "responses=experimental", originator: "pi" }, body,
       });
       control.signal.throwIfAborted();
       if (response.status === 401 || response.status === 403) throw failure("AUTHORIZATION_DENIED", `Codex rejected this account or its credentials. ${codexLoginHint}`);
-      if (!response.ok) throw failure("MODEL_FAILED", `Codex returned HTTP ${response.status}.`, response.status === 429 || response.status >= 500, { status: response.status });
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        let detail = "";
+        try { const parsed = JSON.parse(body) as { error?: { code?: string; message?: string }; code?: string; message?: string }; detail = parsed.error?.message ?? parsed.message ?? parsed.error?.code ?? parsed.code ?? ""; } catch { /* preserve the normalized status for non-JSON bodies */ }
+        const safeDetail = detail.replace(/[\r\n]+/g, " ").slice(0, 240);
+        throw failure("MODEL_FAILED", `Codex returned HTTP ${response.status}${safeDetail ? `: ${safeDetail}` : ""}.`, response.status === 429 || response.status >= 500, { status: response.status, ...(safeDetail ? { providerMessage: safeDetail } : {}) });
+      }
       if (!response.body) throw malformed();
       const mapping = new Map((request.tools ?? []).map((tool, index) => [`harness_tool_${index}`, tool.id]));
       const calls = new Map<string, { raw: z.infer<typeof callSchema>; call: ModelToolCall }>();

@@ -17,7 +17,7 @@ const toolsCapability: CapabilityDescriptor = { id: "model.tools", version: "1" 
 export interface OpenAIToolMapping { nativeName: string; canonicalId: string }
 export interface OpenAIToolDefinition { type: "function"; function: { name: string; description: string; parameters: JsonValue } }
 export interface OpenAIAssistantMessage { role: "assistant"; content?: string; tool_calls?: readonly { id: string; type: "function"; function: { name: string; arguments: string } }[] }
-export interface OpenAIChatRequest { model: string; messages: readonly OpenAIChatMessage[]; stream: true; tools?: readonly OpenAIToolDefinition[] }
+export interface OpenAIChatRequest { model: string; messages: readonly OpenAIChatMessage[]; stream: true; temperature?: number; tools?: readonly OpenAIToolDefinition[] }
 export type OpenAIChatMessage = { role: "system" | "user"; content: string } | OpenAIAssistantMessage | { role: "tool"; tool_call_id: string; content: string; name?: string };
 export interface OpenAIStreamState { toolCalls: Map<number, { id?: string; name: string; arguments: string }> }
 export function createOpenAIStreamState(): OpenAIStreamState { return { toolCalls: new Map() }; }
@@ -36,7 +36,7 @@ export function mapRequestToOpenAI(request: ModelRequest, model: string): OpenAI
     else if (message.role === "assistant") messages.push({ role: "assistant", ...(message.content ? { content: message.content } : {}), ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function" as const, function: { name: byCanonical.get(call.toolId) ?? "unknown_tool", arguments: JSON.stringify(call.input) } })) } : {}) });
     else messages.push({ role: "tool", tool_call_id: message.toolCallId, content: serializeToolResult(message.result), ...(byCanonical.has(message.toolId) ? { name: byCanonical.get(message.toolId) } : {}) });
   }
-  return { model, messages, stream: true, ...(mapped.definitions.length ? { tools: mapped.definitions } : {}) };
+  return { model, messages, stream: true, ...(request.temperature === undefined ? {} : { temperature: request.temperature }), ...(mapped.definitions.length ? { tools: mapped.definitions } : {}) };
 }
 
 /** Applies one OpenAI stream chunk to the accumulation state and returns the canonical events it produces. */

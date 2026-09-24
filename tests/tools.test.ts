@@ -11,6 +11,7 @@ describe("ToolProvider foundation", () => {
     const router = new ToolRouter(); await router.register("provider-a", new MockToolProvider("a"), collectContext()); await router.register("provider-b", new MockToolProvider("b"), collectContext());
     expect(router.listTools().map((tool) => tool.canonicalId)).toEqual(["provider-a/add", "provider-a/echo", "provider-a/fail", "provider-a/slow", "provider-b/add", "provider-b/echo", "provider-b/fail", "provider-b/slow"]);
     expect(router.listTools().find((tool) => tool.canonicalId === "provider-a/echo")!.name).toBe("echo");
+    expect(router.listTools().find((tool) => tool.canonicalId === "provider-a/echo")!.capabilities).toEqual(["provider-a.echo"]);
   });
   it("routes colliding display names to the selected provider", async () => {
     const a = new MockToolProvider("a"); const b = new MockToolProvider("b"); const router = new ToolRouter(); await router.register("a", a, collectContext()); await router.register("b", b, collectContext());

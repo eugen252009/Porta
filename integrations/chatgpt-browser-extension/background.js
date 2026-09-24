@@ -26,12 +26,16 @@ async function portaRequest(message, sessionId) {
   const response = await fetch(new URL(path, endpoint), init); let body = {}; try { body = await response.json(); } catch {} if (!response.ok) { const error = new Error(body.error?.message || body.error || `PORTA_REQUEST_FAILED_${response.status}`); error.code = body.kind || body.error?.code || `HTTP_${response.status}`; throw error; } return body;
 }
 async function submit(message) {
+  validateMessage(message);
   const config = await settings(); const endpoint = validEndpoint(config.endpoint); if (!endpoint) throw new Error("PORTA_EXTENSION_NOT_CONFIGURED");
   const key = mappingKey(endpoint, message.conversationId, message.nodeId); const stored = await chrome.storage.local.get({ sessionMappings: {} }); const mappings = stored.sessionMappings || {};
   if (message.newSession) delete mappings[key];
   const sessionId = message.newSession ? undefined : mappings[key];
-  const result = await portaRequest(message, sessionId);
+  // Stable across a ChatGPT reload; “New session” remains an explicit fresh submission.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([endpoint, message.conversationId, message.nodeId, message.content, message.requestedModel ?? null])));
+  const stableKey = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const result = await portaRequest({ ...message, idempotencyKey: message.newSession ? message.idempotencyKey : stableKey }, sessionId);
   if (!validText(result.sessionId, 256)) throw new Error("PORTA_SESSION_ID_MISSING");
-  mappings[key] = result.sessionId; await chrome.storage.local.set({ sessionMappings: mappings }); return { ...result, reused: Boolean(sessionId) };
+  mappings[key] = result.sessionId; await chrome.storage.local.set({ sessionMappings: mappings }); return { ...result, reused: Boolean(sessionId), statusUrl: `${endpoint}/app?session=${encodeURIComponent(result.sessionId)}` };
 }
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => { if (sender.tab && !/^https:\/\/(?:chatgpt\.com|chat\.openai\.com)\//.test(sender.tab.url || "")) { sendResponse({ ok: false, error: "UNTRUSTED_MESSAGE_SENDER" }); return false; } const operation = message?.type === "porta.submitPrompt" ? submit(message) : portaRequest(message); void operation.then((value) => sendResponse({ ok: true, value })).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : "PORTA_REQUEST_FAILED", code: error?.code })); return true; });

@@ -53,8 +53,9 @@ const webConfigSchema = z.object({ targets: z.array(targetConfigSchema).default(
 export const portaConfigSchema = z.object({
   model: modelConfigSchema,
   tools: z.array(toolConfigSchema).default([]),
-  authorization: z.object({ mode: z.enum(["allow-all", "require-approval"]) }).default({ mode: "require-approval" }),
+  authorization: z.object({ mode: z.enum(["allow-all", "require-approval", "workspace"]), sensitivePaths: z.array(z.string().min(1)).max(128).optional() }).default({ mode: "require-approval" }),
   agent: z.object({ maxSteps: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional() }).default({}),
+  jobs: z.object({ timeoutMs: z.number().int().positive().max(86400000).default(1800000), maxQueued: z.number().int().positive().max(256).default(32), unattendedTools: z.array(z.string().regex(/^[^/]+\/[^/]+$/)).max(128).default([]) }).strict().optional(),
   delegation: z.object({ enabled: z.boolean().default(false), maxDepth: z.number().int().nonnegative().default(2), maxChildren: z.number().int().positive().default(4) }).optional(),
   conversation: z.object({ maxTurns: z.number().int().positive().optional(), compaction: z.object({ enabled: z.boolean().default(false), keepRecentTurns: z.number().int().positive().default(4), maxManifestEntries: z.number().int().positive().default(20) }).optional() }).default({}),
   filesystem: z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().optional(), maxReadBytes: z.number().int().positive().optional(), maxSummaryChars: z.number().int().positive().optional(), mutation: z.object({ enabled: z.boolean().default(false), maxWriteBytes: z.number().int().positive().optional(), maxPatchTargetBytes: z.number().int().positive().optional() }).optional() }).optional(),

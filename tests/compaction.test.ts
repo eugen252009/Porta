@@ -21,23 +21,23 @@ function setup(compactor: ConversationCompactor = new DeterministicConversationC
 }
 
 describe("conversation compaction", () => {
-  it("keeps canonical history, recent turns, recovery hint, and bounded scratchpad manifest", async () => {
+  it("keeps canonical history, bounded scratchpad manifest, and neutral guidance", async () => {
     const { gateway, model, conversations, scratchpad } = setup(); const sessionId = await createSession(gateway); await scratchpad.write(sessionId, "important", "SCRATCHPAD_DURABLE_SENTINEL_8127"); await scratchpad.write(sessionId, "other", "other note"); await scratchpad.write(sessionId, "third", "third note");
     await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "second" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "third" }, {}));
     const request = model.received[2]!; const control = request.control?.map((message) => message.content).join("\n") ?? "";
-    expect(control).toContain("Conversation history was compacted"); expect(control).toContain("scratchpad/search"); expect(control).toContain("important"); expect(control).toContain("... 1 more entries"); expect(control).not.toContain("SCRATCHPAD_DURABLE_SENTINEL_8127");
+    expect(control).toContain("Conversation history was compacted"); expect(control).toContain("scratchpad"); expect(control).toContain("important"); expect(control).toContain("... 1 more entries"); expect(control).not.toContain("SCRATCHPAD_DURABLE_SENTINEL_8127");
     expect(request.messages).toEqual(expect.arrayContaining([{ role: "user", content: "second" }, { role: "assistant", content: "turn two" }, { role: "user", content: "third" }]));
     expect((await conversations.getSession(sessionId))?.turns).toHaveLength(3); expect((await scratchpad.read(sessionId, "important"))?.content).toBe("SCRATCHPAD_DURABLE_SENTINEL_8127");
   });
 
   it("does not add recovery control before compaction and restores notes only explicitly", async () => {
     const { gateway, model, scratchpad } = setup(); const sessionId = await createSession(gateway); await scratchpad.write(sessionId, "note", "PRIVATE_NOTE"); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {}));
-    expect(model.received[0]?.control).toEqual([]); expect(JSON.stringify(model.received[0])).not.toContain("PRIVATE_NOTE");
+    expect(model.received[0]?.control?.map((message) => message.content).join("\n")).toContain("Use a tool only when it is necessary"); expect(JSON.stringify(model.received[0])).not.toContain("PRIVATE_NOTE");
     const notes = new ScratchpadToolProvider(scratchpad); const read = await notes.invoke({ schemaVersion: 1, requestId: "read", toolId: "read", input: { key: "note" } }, context(sessionId)); expect(JSON.stringify(read)).toContain("PRIVATE_NOTE");
   });
 
   it("falls back to deterministic recent history when compaction fails", async () => {
-    const failing: ConversationCompactor = { compact: async () => { throw new Error("compactor unavailable"); } }; const { gateway, model } = setup(failing); const sessionId = await createSession(gateway); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "second" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "third" }, {})); expect(model.received[2]?.control).toEqual([]); expect(model.received[2]?.messages).toEqual(expect.arrayContaining([{ role: "user", content: "second" }]));
+    const failing: ConversationCompactor = { compact: async () => { throw new Error("compactor unavailable"); } }; const { gateway, model } = setup(failing); const sessionId = await createSession(gateway); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "first" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "second" }, {})); await collect(gateway.execute({ type: "SubmitInput", sessionId, input: "third" }, {})); expect(model.received[2]?.control?.map((message) => message.content).join("\n")).toContain("Use a tool only when it is necessary"); expect(model.received[2]?.messages).toEqual(expect.arrayContaining([{ role: "user", content: "second" }]));
   });
 
   it("does not start an execution when compaction times out", async () => {

@@ -104,7 +104,7 @@ COPY --from=build /src/web ./web
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 4173
+EXPOSE 4173 4174
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD node -e "fetch('http://127.0.0.1:4173/ready').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["--network"]

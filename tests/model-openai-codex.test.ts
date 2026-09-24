@@ -33,11 +33,11 @@ describe("Codex subscription adapter", () => {
       { role: "assistant", content: "checking", toolCalls: [{ id: "arbitrary/id|native", toolId: "server-b/echo", input: { value: "ok" } }] },
       { role: "tool", toolCallId: "arbitrary/id|native", toolId: "server-b/echo", result: { toolCallId: "arbitrary/id|native", toolId: "server-b/echo", output: null, error: { code: "AUTHORIZATION_DENIED", message: "denied", retryable: false } } },
     ] }, "test") as { input: { call_id?: string }[] };
-    expect(mapped).toMatchObject({ store: false, stream: true, instructions: "one\n\ntwo", tools: [{ name: "harness_tool_0" }, { name: "harness_tool_1" }], input: [{ role: "user", content: "earlier" }, { role: "assistant" }, { type: "function_call", name: "harness_tool_1" }, { type: "function_call_output", output: expect.stringContaining("AUTHORIZATION_DENIED") }] });
+    expect(mapped).toMatchObject({ store: false, stream: true, instructions: "one\n\ntwo", tools: [{ name: "harness_tool_0" }, { name: "harness_tool_1" }], input: [{ role: "user", content: [{ type: "input_text", text: "earlier" }] }, { role: "assistant" }, { type: "function_call", name: "harness_tool_1" }, { type: "function_call_output", output: expect.stringContaining("AUTHORIZATION_DENIED") }] });
     expect(mapped.input[2]?.call_id).toBe(mapped.input[3]?.call_id);
     expect(mapped.input[2]?.call_id).toMatch(/^call_[a-f0-9]+$/);
     expect(JSON.stringify(mapped)).not.toContain('"content":"hello"');
-    expect(mapRequestToCodex({ ...request, messages: [] }, "test")).toMatchObject({ input: [{ role: "user", content: "hello" }] });
+    expect(mapRequestToCodex({ ...request, messages: [] }, "test")).toMatchObject({ input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }] });
   });
 
   it("sends OAuth to the fixed Codex endpoint, without redirects or API billing fallback", async () => {
@@ -104,12 +104,9 @@ describe("Codex subscription adapter", () => {
     expect(events.some((event) => event.type !== "delta")).toBe(false);
   });
 
-  it.each([401, 403, 429, 500, 400])("normalizes HTTP %s without reading or leaking its body", async (status) => {
-    let cancelled = false;
-    const stream = new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } });
-    const model = new OpenAICodexModelProvider({ model: "test" }, auth, async () => new Response(stream, { status }));
-    await expect(collect(model.generate(request, context()))).rejects.toMatchObject({ error: { code: status === 401 || status === 403 ? "AUTHORIZATION_DENIED" : "MODEL_FAILED", retryable: status === 429 || status >= 500 } });
-    expect(cancelled).toBe(true);
+  it.each([401, 403, 429, 500, 400])("normalizes HTTP %s and preserves safe provider errors", async (status) => {
+    const model = new OpenAICodexModelProvider({ model: "test" }, auth, async () => new Response(JSON.stringify({ error: { code: "invalid_request", message: "safe provider detail" } }), { status, headers: { "content-type": "application/json" } }));
+    await expect(collect(model.generate(request, context()))).rejects.toMatchObject({ error: { code: status === 401 || status === 403 ? "AUTHORIZATION_DENIED" : "MODEL_FAILED", message: status === 401 || status === 403 ? expect.any(String) : expect.stringContaining("safe provider detail"), retryable: status === 429 || status >= 500 } });
   });
 
   it("rejects missing credentials before contacting the backend", async () => {

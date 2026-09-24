@@ -75,7 +75,7 @@ export class DelegatedTaskStore {
 }
 function cloneTask(task: DelegatedTask): DelegatedTask { return { ...task, effectivePermissions: [...task.effectivePermissions], attempts: task.attempts.map((attempt) => ({ ...attempt, permissions: [...attempt.permissions] })) }; }
 export function delegationPermissionForTool(toolId: string): string { if (toolId.startsWith("filesystem/read") || toolId.startsWith("filesystem/list") || toolId.startsWith("filesystem/stat") || toolId.startsWith("filesystem/search")) return "filesystem.read"; if (toolId.startsWith("filesystem/")) return "filesystem.write"; if (toolId.startsWith("execution/")) return "execution"; if (toolId === "agent/delegate") return "agent.delegate"; return toolId.startsWith("scratchpad/") || toolId.startsWith("artifact/") || toolId.startsWith("task/") ? "task.state" : `tool:${toolId}`; }
-export function permissionsForTools(tools: readonly ToolDescriptor[]): readonly DelegationPermission[] { return [...new Set(tools.map((tool) => delegationPermissionForTool((tool as ToolDescriptor & { canonicalId?: string }).canonicalId ?? tool.id)))]; }
+export function permissionsForTools(tools: readonly ToolDescriptor[]): readonly DelegationPermission[] { return [...new Set(tools.flatMap((tool) => tool.capabilities?.length ? tool.capabilities : [delegationPermissionForTool((tool as ToolDescriptor & { canonicalId?: string }).canonicalId ?? tool.id)]))]; }
 
 export class DelegationOrchestrator {
   constructor(private readonly store: DelegatedTaskStore) {}
@@ -83,7 +83,7 @@ export class DelegationOrchestrator {
     const task = this.store.get(input.taskId); if (!task) throw new Error("Delegated task was not found.");
     const attempt = await this.store.startAttempt(task.id, input.model.descriptor);
     const allowed = input.tools.listTools().filter((tool) => toolAllowed(tool, task.effectivePermissions));
-    const policy: ToolAuthorizationPolicy = { authorize: async (request) => task.effectivePermissions.includes(permissionFor(request.invocation.toolId)) ? input.policy.authorize(request) : "deny" };
+    const policy: ToolAuthorizationPolicy = { authorize: async (request) => toolPermitted(request.descriptor, request.invocation.toolId, task.effectivePermissions) ? input.policy.authorize(request) : "deny" };
     const context: ModelContext = { traceId: task.context?.traceId ?? `delegated-${task.id}`, sessionId: task.parentSessionId, executionId: attempt.id, signal: input.signal ?? new AbortController().signal, delegatedTaskId: task.id };
     const control = [{ role: "system" as const, content: "You are a delegated worker operating on a bounded task. Use the task-owned scratchpad as durable handoff state, verify hypotheses, preserve useful findings, do not expand scope, and return a concise result to the parent." }, { role: "system" as const, content: `Delegated task scratchpad namespace: ${task.scratchpadNamespace}. Objective: ${task.objective}${task.constraints?.length ? `\nConstraints: ${task.constraints.join("; ")}` : ""}${task.acceptanceCriteria?.length ? `\nAcceptance criteria: ${task.acceptanceCriteria.join("; ")}` : ""}` }];
     const execution = new AgentOrchestrator(input.model, input.tools, { maxSteps: input.budget?.maxTurns ?? 6, maxToolCalls: input.budget?.maxToolCalls ?? 20 }, { policy, approvalProvider: input.approvalProvider }).create(task.objective, context, allowed, [], control);
@@ -96,7 +96,8 @@ export class DelegationOrchestrator {
   }
 }
 function permissionFor(toolId: string): string { return delegationPermissionForTool(toolId); }
-function toolAllowed(tool: ToolDescriptor & { canonicalId?: string }, permissions: readonly string[]): boolean { const canonical = tool.canonicalId ?? tool.id; return permissions.includes(permissionFor(canonical)) || permissionFor(canonical) === "task.state"; }
+function toolAllowed(tool: ToolDescriptor & { canonicalId?: string }, permissions: readonly string[]): boolean { return toolPermitted(tool, tool.canonicalId ?? tool.id, permissions); }
+function toolPermitted(descriptor: ToolDescriptor | undefined, toolId: string, permissions: readonly string[]): boolean { const required = descriptor?.capabilities?.length ? descriptor.capabilities : [permissionFor(toolId)]; return required.some((permission) => permissions.includes(permission) || permission === "task.state" || permission.startsWith("scratchpad.") || permission.startsWith("task.") || permission.startsWith("artifact.") || (permission === "process.execute" && permissions.includes("execution"))); }
 
 const requestSchema = z.object({ objective: z.string().min(1), targetNodeId: z.string().min(1).optional(), model: z.string().min(1).optional(), restrict: z.array(z.string().min(1)).optional(), budget: z.object({ maxTurns: z.number().int().positive().optional(), maxToolCalls: z.number().int().positive().optional(), maxTokens: z.number().int().positive().optional() }).optional(), scratchpad: z.object({ context: z.array(z.string()).optional(), constraints: z.array(z.string()).optional(), hypotheses: z.array(z.string()).optional(), relevantFiles: z.array(z.string()).optional() }).optional() }).strict();
 export interface RemoteDelegationRunner { (task: DelegatedTask, targetNodeId: string, request: DelegationRequest, context: ToolContext): Promise<ToolResult> }

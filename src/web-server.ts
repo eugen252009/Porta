@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import { randomBytes, createPrivateKey, createPublicKey, X509Certificate } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createSecureServer } from "node:http2";
 import { stat } from "node:fs/promises";
@@ -9,6 +10,7 @@ import { ApplicationGateway, HarnessFailure, KernelCommand, KernelEvent, ModelOp
 import { TaskStore } from "./task.js";
 import { attentionFor } from "./attention.js";
 import { ProviderRegistry, ProviderConfig } from "./provider-registry.js";
+import { optionMatchesSelection, selectionRef } from "./model-identity.js";
 import { buildInfo } from "./build-info.js";
 import { LoginService, InstanceIdentityStore } from "./identity.js";
 import { WebAuthnService } from "./webauthn.js";
@@ -24,12 +26,17 @@ import type { IntegrationCredentialStore } from "./integration-auth.js";
 import type { ApplicationEventHub } from "./application-events.js";
 import { RemoteApplicationError, type RemoteApplicationGateway } from "./remote-application.js";
 import { PromptSubmissionError } from "./prompt-submission.js";
+import { handleOpenAIChat, handleOpenAIModels } from "./openai-api.js";
+import { CodexWebAuthService } from "./adapters/codex-auth.js";
+import type { SessionWorkspaceManager, CreateWorkspaceInput } from "./session-workspaces.js";
+import type { GitCredentialStore, GitCredentialInput, GitCredentialType } from "./git-credentials.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
   modelCatalog?: () => Promise<readonly ModelOption[]>;
   modelCatalogStatus?: () => Promise<{ provider: string; status: "available" | "unavailable"; models: readonly ModelOption[]; error?: string }>;
   modelSelection?: ModelSelection;
+  resolveModel?: (requested?: string) => Promise<import("./contracts.js").ModelProvider>;
   tasks?: Pick<TaskStore, "delete" | "get" | "list">;
   delegatedTasks?: DelegatedTaskApplicationService;
   promptSubmission?: import("./prompt-submission.js").PromptSubmissionService;
@@ -49,7 +56,11 @@ export interface WebApplication {
   uiSessionToken?: string;
   webauthn?: WebAuthnService;
   uiSessions?: Map<string, number>;
+  inspectSessionCapabilities?: (sessionId: string) => Promise<unknown>;
   developmentRunner?: Pick<DevelopmentRunner, "intervene" | "wake" | "release" | "recover">;
+  openAICodexAuth?: CodexWebAuthService;
+  workspaces?: SessionWorkspaceManager;
+  gitCredentials?: GitCredentialStore;
 }
 
 export interface PortaTarget { id: string; displayName: string; kind: "local" | "remote"; endpoint?: string }
@@ -61,9 +72,11 @@ export interface WebServerOptions {
   targets?: readonly PortaTarget[];
   tls?: { mode: "disabled" | "proxy" | "native"; certificatePath?: string; privateKeyPath?: string };
   extensionOrigins?: readonly string[];
+  apiOnly?: boolean;
 }
 
 const contentTypes: Record<string, string> = {
+  ".svg": "image/svg+xml",
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -75,7 +88,7 @@ export function createPortaWebServer(application: WebApplication, options: WebSe
   const uiSessions = application.uiSessions ?? new Map<string, number>();
   const federatedNodeCache = new Map<string, FederatedNodeCache>();
   const tls = options.tls ?? { mode: "disabled" as const };
-  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache); };
+  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache, options.apiOnly ?? false); };
   const server = tls.mode === "native" ? createNativeTlsServer(tls, handler) : createServer(handler);
   return {
     server,
@@ -105,13 +118,21 @@ function createNativeTlsServer(tls: NonNullable<WebServerOptions["tls"]>, handle
   return createSecureServer({ cert: certificate, key: privateKey, allowHTTP1: true }, handler as any);
 }
 
-async function route(application: WebApplication, webRoot: string, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>): Promise<void> {
+async function route(application: WebApplication, webRoot: string, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>, apiOnly: boolean): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
+    const machineAPI = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
+    if (apiOnly && !machineAPI && url.pathname !== "/version" && url.pathname !== "/ready") { json(response, 404, { error: "Not found" }); return; }
+    if (!apiOnly && machineAPI) { json(response, 404, { error: "Not found" }); return; }
+    if (apiOnly && machineAPI && process.env.PORTA_LLM_API_SECRET && request.headers.authorization !== `Bearer ${process.env.PORTA_LLM_API_SECRET}`) { json(response, 401, { error: "unauthorized" }); return; }
     if (request.method === "GET" && url.pathname === "/version") { response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(buildInfo())); return; }
     if (request.method === "GET" && url.pathname === "/ready") { json(response, 200, { ready: true, service: "porta", version: buildInfo() }); return; }
+    if (request.method === "GET" && url.pathname === "/v1/models") { if (!application.modelCatalog) { json(response, 503, { error: { message: "Model catalog is unavailable.", type: "server_error", code: "model_catalog_unavailable" } }); return; } await handleOpenAIModels({ modelCatalog: application.modelCatalog }, response); return; }
+    if (request.method === "POST" && url.pathname === "/v1/chat/completions") { if (!application.modelCatalog || !application.resolveModel) { json(response, 503, { error: { message: "OpenAI-compatible API is unavailable.", type: "server_error", code: "api_unavailable" } }); return; } let body: Record<string, unknown> | undefined; try { body = await readJson(request); } catch { json(response, 400, { error: { message: "Request body must contain valid JSON.", type: "invalid_request_error", code: "invalid_json" } }); return; } if (!body) { json(response, 400, { error: { message: "Request body must be a JSON object.", type: "invalid_request_error", code: "invalid_json" } }); return; } await handleOpenAIChat({ modelCatalog: application.modelCatalog, resolveModel: application.resolveModel }, request, response, body); return; }
     if (request.method === "POST" && url.pathname === "/auth/webauthn/register/options") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } if (application.webauthn.hasCredentials()) { json(response, 403, { error: "WEBAUTHN_ENROLLMENT_CLOSED" }); return; } json(response, 200, await application.webauthn.registrationOptions()); return; }
     if (request.method === "POST" && url.pathname === "/auth/webauthn/register/verify") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { const body = await readJson(request) as any; await application.webauthn.register(String(body.transaction), body.response, typeof body.displayName === "string" ? body.displayName : undefined); const token = randomBytes(32).toString("base64url"); application.uiSessions?.set(token, Date.now() + 8 * 60 * 60 * 1000); response.setHeader("Set-Cookie", `porta_ui=${token}; HttpOnly; SameSite=Strict; Path=/`); json(response, 200, { authenticated: true }); } catch (error) { json(response, 401, { error: error instanceof Error ? error.message : "WEBAUTHN_REGISTRATION_INVALID" }); } return; }
+    if (request.method === "POST" && url.pathname === "/auth/webauthn/enrollment/options") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } json(response, 200, await application.webauthn.enrollmentOptions()); return; }
+    if (request.method === "POST" && url.pathname === "/auth/webauthn/enrollment/verify") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { const body = await readJson(request) as any; const credential = await application.webauthn.registerPending(String(body.transaction), body.response, typeof body.displayName === "string" ? body.displayName : "Automation credential"); json(response, 202, { status: "pending", credentialId: credential.credentialId, displayName: credential.displayName, createdAt: credential.createdAt }); } catch (error) { json(response, 400, { error: error instanceof Error ? error.message : "WEBAUTHN_ENROLLMENT_INVALID" }); } return; }
     if (request.method === "POST" && url.pathname === "/auth/webauthn/login/options") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { json(response, 200, await application.webauthn.loginOptions()); } catch (error) { json(response, 403, { error: error instanceof Error ? error.message : "WEBAUTHN_NOT_ENROLLED" }); } return; }
     if (request.method === "POST" && url.pathname === "/auth/webauthn/login/verify") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { const body = await readJson(request) as any; await application.webauthn.login(String(body.transaction), body.response); const token = randomBytes(32).toString("base64url"); application.uiSessions?.set(token, Date.now() + 8 * 60 * 60 * 1000); response.setHeader("Set-Cookie", `porta_ui=${token}; HttpOnly; SameSite=Strict; Path=/`); json(response, 200, { authenticated: true }); } catch (error) { json(response, 401, { error: error instanceof Error ? error.message : "WEBAUTHN_ASSERTION_INVALID" }); } return; }
     if (request.method === "GET" && url.pathname === "/auth/status") { json(response, 200, { configured: application.webauthn?.hasCredentials() ?? false, authenticated: isUiSessionRequest(application, request) }); return; }
@@ -142,10 +163,31 @@ function isAuthenticatedApiRequest(application: WebApplication, request: Incomin
 
 async function api(application: WebApplication, url: URL, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>): Promise<void> {
   const principal = principalForRequest(application, request); if (!principal) { json(response, 401, { error: "AUTH_TOKEN_INVALID" }); return; }
+  if (url.pathname === "/api/providers/openai/status" || url.pathname === "/api/providers/openai/login" || url.pathname.startsWith("/api/providers/openai/login/") || url.pathname === "/api/providers/openai/disconnect") {
+    if (principal.kind !== "human" || !application.openAICodexAuth) { json(response, 403, { error: "OPENAI_AUTH_PERMISSION_DENIED" }); return; }
+    if (request.method === "GET" && url.pathname === "/api/providers/openai/status") { json(response, 200, await application.openAICodexAuth.status()); return; }
+    if (request.method === "POST" && url.pathname === "/api/providers/openai/login") { const body = await readJson(request); const method = body?.method === "browser" ? "browser" : "device_code"; json(response, 202, application.openAICodexAuth.startLogin(method)); return; }
+    if (request.method === "GET" && url.pathname.startsWith("/api/providers/openai/login/")) { const id = decodeURIComponent(url.pathname.slice("/api/providers/openai/login/".length)); json(response, 200, await application.openAICodexAuth.loginStatus(id)); return; }
+    if (request.method === "POST" && url.pathname === "/api/providers/openai/disconnect") { await application.openAICodexAuth.disconnect(); json(response, 200, { status: "disconnected" }); return; }
+    json(response, 405, { error: "METHOD_NOT_ALLOWED" }); return;
+  }
+  if (url.pathname === "/api/auth/webauthn/credentials" || url.pathname === "/api/auth/webauthn/pending") {
+    if (principal.kind !== "human" || !application.webauthn) { json(response, 403, { error: "WEBAUTHN_PERMISSION_DENIED" }); return; }
+    const publicCredential = ({ credentialId, displayName, createdAt, lastUsedAt, transports }: import("./webauthn.js").WebAuthnCredential) => ({ credentialId, displayName, createdAt, ...(lastUsedAt ? { lastUsedAt } : {}), ...(transports ? { transports } : {}) });
+    if (url.pathname === "/api/auth/webauthn/credentials" && request.method === "GET") { json(response, 200, { credentials: application.webauthn.list().map(publicCredential) }); return; }
+    if (url.pathname === "/api/auth/webauthn/credentials" && request.method === "DELETE") { const id = decodeURIComponent(url.pathname.slice("/api/auth/webauthn/credentials/".length)); try { application.webauthn.remove(id); json(response, 200, { revoked: true, credentialId: id }); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "WEBAUTHN_CREDENTIAL_REVOKE_FAILED" }); } return; }
+    if (url.pathname === "/api/auth/webauthn/pending" && request.method === "GET") { json(response, 200, { credentials: application.webauthn.listPending().map(publicCredential) }); return; }
+    if (url.pathname === "/api/auth/webauthn/pending" && request.method === "POST") { const body = await readJson(request) as { credentialId?: string; action?: string }; if (typeof body.credentialId !== "string" || (body.action !== "approve" && body.action !== "reject")) { json(response, 400, { error: "credentialId and action are required" }); return; } try { if (body.action === "approve") application.webauthn.approvePending(body.credentialId); else application.webauthn.rejectPending(body.credentialId); json(response, 200, { status: body.action === "approve" ? "active" : "rejected", credentialId: body.credentialId }); } catch (error) { json(response, 404, { error: error instanceof Error ? error.message : "WEBAUTHN_PENDING_CREDENTIAL_UNKNOWN" }); } return; }
+    json(response, 405, { error: "METHOD_NOT_ALLOWED" }); return;
+  }
+  if (url.pathname.startsWith("/api/auth/webauthn/credentials/") && request.method === "DELETE") {
+    if (principal.kind !== "human" || !application.webauthn) { json(response, 403, { error: "WEBAUTHN_PERMISSION_DENIED" }); return; }
+    const id = decodeURIComponent(url.pathname.slice("/api/auth/webauthn/credentials/".length)); try { application.webauthn.remove(id); json(response, 200, { revoked: true, credentialId: id }); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "WEBAUTHN_CREDENTIAL_REVOKE_FAILED" }); } return;
+  }
   if (request.method === "GET" && url.pathname === "/api/integrations") { if (principal.kind !== "human" || !application.integrationAuth) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } json(response, 200, { integrations: application.integrationAuth.list() }); return; }
   if (request.method === "POST" && url.pathname === "/api/integrations") { if (principal.kind !== "human" || !application.integrationAuth) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } const body = await readJson(request); const permissions = Array.isArray(body?.permissions) && body.permissions.every((permission) => typeof permission === "string") ? body.permissions as string[] : []; if (typeof body?.label !== "string" || !permissions.length || permissions.some((permission) => !["nodes.read", "models.read", "prompt.submit"].includes(permission))) { json(response, 400, { error: "Invalid integration credential." }); return; } json(response, 201, application.integrationAuth.create(body.label, permissions)); return; }
   if (request.method === "DELETE" && url.pathname.startsWith("/api/integrations/")) { if (principal.kind !== "human" || !application.integrationAuth) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } application.integrationAuth.revoke(decodeURIComponent(url.pathname.slice("/api/integrations/".length))); json(response, 200, { revoked: true }); return; }
-  if (request.method === "POST" && url.pathname === "/api/prompt/submit") { const body = await readJson(request); const model = body?.requestedModel && typeof body.requestedModel === "object" ? body.requestedModel as { provider: string; model: string } : undefined; if (!application.promptSubmission || typeof body?.content !== "string" || typeof body?.idempotencyKey !== "string") { json(response, 400, { error: "content and idempotencyKey are required." }); return; } if (principal.kind !== "human" && !(principal.kind === "integration" && application.integrationAuth?.allows(principal, "prompt.submit"))) { json(response, 403, { error: "PROMPT_SUBMIT_NOT_AUTHORIZED" }); return; } try { json(response, 202, await application.promptSubmission.submit({ content: body.content, idempotencyKey: body.idempotencyKey, ...(typeof body.targetNodeId === "string" ? { targetNodeId: body.targetNodeId } : {}), ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(model ? { requestedModel: model } : {}), ...(body.mode === "task" ? { mode: "task" as const } : {}), ...(typeof body.source === "string" ? { source: body.source.slice(0, 80) } : {}) }, principal)); } catch (error) { const status = error instanceof PromptSubmissionError ? (error.kind === "denied" ? 403 : error.kind === "unsupported" || error.kind === "not_found" ? 404 : error.kind === "unavailable" ? 503 : 409) : 400; json(response, status, { error: error instanceof Error ? error.message : "Prompt submission failed.", kind: error instanceof PromptSubmissionError ? error.kind : "failed" }); } return; }
+  if (request.method === "POST" && url.pathname === "/api/prompt/submit") { const body = await readJson(request); const model = body?.requestedModel && typeof body.requestedModel === "object" ? body.requestedModel as { provider: string; model: string } : undefined; if (!application.promptSubmission || typeof body?.content !== "string" || typeof body?.idempotencyKey !== "string") { json(response, 400, { error: "content and idempotencyKey are required." }); return; } if (principal.kind !== "human" && !(principal.kind === "integration" && application.integrationAuth?.allows(principal, "prompt.submit"))) { json(response, 403, { error: "PROMPT_SUBMIT_NOT_AUTHORIZED" }); return; } try { json(response, 202, await application.promptSubmission.submit({ content: body.content, idempotencyKey: body.idempotencyKey, ...(typeof body.targetNodeId === "string" ? { targetNodeId: body.targetNodeId } : {}), ...(typeof body.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(model ? { requestedModel: model } : {}), ...(body.mode === "agent" || body.mode === "chat" ? { mode: body.mode } : {}), ...(typeof body.source === "string" ? { source: body.source.slice(0, 80) } : {}) }, principal)); } catch (error) { const status = error instanceof PromptSubmissionError ? (error.kind === "denied" ? 403 : error.kind === "unsupported" || error.kind === "not_found" ? 404 : error.kind === "unavailable" ? 503 : 409) : 400; json(response, status, { error: error instanceof Error ? error.message : "Prompt submission failed.", kind: error instanceof PromptSubmissionError ? error.kind : "failed" }); } return; }
   if (principal.kind === "integration") { const required = url.pathname === "/api/nodes" ? "nodes.read" : url.pathname === "/api/models" ? "models.read" : url.pathname === "/api/prompt/submit" ? "prompt.submit" : undefined; if (!required || !application.integrationAuth?.allows(principal, required)) { json(response, 403, { error: "INTEGRATION_PERMISSION_DENIED" }); return; } }
   if (request.method === "GET" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, { identities: application.identity.listAllowed() }); return; }
   if (request.method === "POST" && url.pathname === "/api/identity/allowed") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } const body = await readJson(request) as { identity?: string; publicKey?: string; algorithm?: "ed25519"; displayName?: string }; if (!body.identity || !body.publicKey || body.algorithm !== "ed25519" || !body.displayName) { json(response, 400, { error: "Identity, publicKey, algorithm, and displayName are required." }); return; } application.identity.allow({ identity: body.identity, publicKey: body.publicKey, algorithm: "ed25519" }, body.displayName); json(response, 201, { created: true }); return; }
@@ -182,19 +224,25 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   if (remote && request.method === "POST" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/recover")) { const task = await remote.recoverTask(decodeURIComponent(url.pathname.slice("/api/tasks/".length, -"/recover".length))); if (!task) { json(response, 404, { error: "Task was not found." }); return; } json(response, 200, task); return; }
   if (remote && request.method === "POST" && url.pathname.startsWith("/api/tasks/") && url.pathname.endsWith("/intervention")) { const taskId = decodeURIComponent(url.pathname.slice("/api/tasks/".length, -"/intervention".length)); const body = await readJson(request); if (!Number.isInteger(body?.version) || typeof body?.action !== "string") { json(response, 400, { error: "version and action are required" }); return; } const task = await remote.interveneTask(taskId, body.version as number, body.action as import("./task.js").DevelopmentInterventionAction, typeof body.input === "string" ? body.input : undefined, typeof body.message === "string" ? body.message : undefined); if (!task) { json(response, 404, { error: "Task was not found." }); return; } json(response, 200, task); return; }
   if (remote && request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/cancel")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/cancel".length)); json(response, 200, await remote.cancelSession(sessionId)); return; }
-  if (remote && request.method === "POST" && url.pathname === "/api/sessions") { const body = await readJson(request); const model = body?.model && typeof body.model === "object" ? body.model as { provider: string; model: string } : undefined; try { json(response, 200, { type: "SessionCreated", sessionId: (await remote.createSession({ ...(model ? { model } : {}) })).id }); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Remote session creation failed." }); } return; }
+  if (remote && request.method === "POST" && url.pathname === "/api/sessions") { const body = await readJson(request); if (body?.repository || body?.savedProjectId || body?.gitCredential || body?.credentialIds) { json(response, 400, { error: "Project workspaces are only available on the local Porta node." }); return; } const model = body?.model && typeof body.model === "object" ? body.model as { provider: string; model: string } : undefined; try { json(response, 200, { type: "SessionCreated", sessionId: (await remote.createSession({ ...(model ? { model } : {}) })).id }); } catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Remote session creation failed." }); } return; }
   if (remote && request.method === "GET" && url.pathname.startsWith("/api/sessions/") && !url.pathname.endsWith("/task")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length)); const session = await remote.getSession(sessionId); if (!session) { json(response, 404, { error: "Session was not found." }); return; } json(response, 200, session); return; }
   if (remote && request.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/messages")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/messages".length)); const body = await readJson(request); if (typeof body?.input !== "string" || !body.input.trim()) { json(response, 400, { error: "input is required" }); return; } json(response, 200, await remote.submitSession(sessionId, body.input)); return; }
   if (remote && request.method === "GET" && url.pathname === "/api/delegated-tasks") { json(response, 200, { tasks: await remote.listDelegatedTasks() }); return; }
   if (remote && url.pathname.startsWith("/api/sessions/") && !(request.method === "GET" && !url.pathname.endsWith("/task")) && !(request.method === "POST" && (url.pathname.endsWith("/messages") || url.pathname.endsWith("/cancel")))) { json(response, 501, { error: "REMOTE_SESSION_OPERATION_UNSUPPORTED", kind: "unsupported" }); return; }
+  if (url.pathname === "/api/projects" && request.method === "GET") { if (targetId !== "local" || principal.kind !== "human" || !application.workspaces) { json(response, 403, { error: "PROJECT_PERMISSION_DENIED" }); return; } json(response, 200, { projects: await application.workspaces.savedProjects() }); return; }
+  if (url.pathname.startsWith("/api/projects/") && request.method === "DELETE") { if (targetId !== "local" || principal.kind !== "human" || !application.workspaces) { json(response, 403, { error: "PROJECT_PERMISSION_DENIED" }); return; } try { await application.workspaces.deleteSavedProject(decodeURIComponent(url.pathname.slice("/api/projects/".length))); json(response, 200, { deleted: true }); } catch (error) { respondWorkspaceError(response, error); } return; }
+  if (url.pathname === "/api/git-credentials" && request.method === "GET") { if (targetId !== "local" || principal.kind !== "human" || !application.gitCredentials) { json(response, 403, { error: "GIT_CREDENTIAL_PERMISSION_DENIED" }); return; } const sessionId = url.searchParams.get("sessionId") ?? ""; json(response, 200, { credentials: await application.gitCredentials.listForSession(sessionId) }); return; }
+  if (url.pathname === "/api/git-credentials" && request.method === "POST") { if (targetId !== "local" || principal.kind !== "human" || !application.gitCredentials) { json(response, 403, { error: "GIT_CREDENTIAL_PERMISSION_DENIED" }); return; } try { const credential = parseGitCredential(await readJson(request), "global"); json(response, 201, { credential: await application.gitCredentials.create(credential) }); } catch (error) { respondWorkspaceError(response, error); } return; }
+  if (url.pathname.startsWith("/api/git-credentials/") && request.method === "DELETE") { if (targetId !== "local" || principal.kind !== "human" || !application.gitCredentials) { json(response, 403, { error: "GIT_CREDENTIAL_PERMISSION_DENIED" }); return; } try { const id = decodeURIComponent(url.pathname.slice("/api/git-credentials/".length)); if (await application.workspaces?.isCredentialAssigned(id)) { json(response, 409, { error: "Git credential is assigned to a session workspace. Close or remove that session assignment before deleting it." }); return; } await application.gitCredentials.delete(id); json(response, 200, { deleted: true }); } catch (error) { respondWorkspaceError(response, error); } return; }
   if (request.method === "GET" && url.pathname === "/api/targets") { json(response, 200, { targets: targets.map(({ endpoint: _endpoint, ...descriptor }) => descriptor) }); return; }
   if (request.method === "GET" && url.pathname === "/api/sessions") {
     const ids = application.conversations?.openSessionIds() ?? [];
     const tasks = application.tasks ? await application.tasks.list() : [];
-    const summaries = await Promise.all(ids.map(async (id) => { const session = await application.conversations?.getSession(id); const task = tasks.find((entry) => entry.sessionId === id); return { sessionId: id, target: session?.target ?? targetId, ...(session?.model ? { model: session.model } : {}), status: task?.status ?? sessionStatus(session?.history ?? []), createdAt: session?.createdAt, updatedAt: task?.updatedAt ?? session?.createdAt, state: session?.state, ...(task ? { task: { id: task.id, objective: task.objective.slice(0, 160), status: task.status, ...(task.development ? { phase: task.development.phase, currentAction: task.development.currentAction, attention: task.development.attention ? attentionFor({ status: task.status, reason: task.development.attention.reason }) : attentionFor({ status: task.status }) } : { attention: attentionFor({ status: task.status }) }) } } : {}) }; }));
+    const summaries = await Promise.all(ids.map(async (id) => { const session = await application.conversations?.getSession(id); const task = tasks.find((entry) => entry.sessionId === id); const job = application.promptSubmission?.jobs.latest(id); return { sessionId: id, ...(job ? { job: { id: job.id, mode: job.mode ?? "agent", status: job.status, title: job.input.slice(0, 160), ...(job.historyBaseMessageCount === undefined ? {} : { historyBaseMessageCount: job.historyBaseMessageCount }), updatedAt: job.updatedAt } } : {}), target: session?.target ?? targetId, ...(session?.model ? { model: session.model } : {}), status: job?.status ?? task?.status ?? sessionStatus(session?.history ?? []), createdAt: session?.createdAt, updatedAt: task?.updatedAt ?? session?.createdAt, state: session?.state, ...(task ? { task: { id: task.id, objective: task.objective.slice(0, 160), status: task.status, ...(task.development ? { phase: task.development.phase, currentAction: task.development.currentAction, attention: task.development.attention ? attentionFor({ status: task.status, reason: task.development.attention.reason }) : attentionFor({ status: task.status }) } : { attention: attentionFor({ status: task.status }) }) } } : {}) }; }));
     json(response, 200, { sessions: summaries.filter((session) => session.state === "open") }); return;
   }
   if (request.method === "GET" && url.pathname === "/api/approvals/pending") { json(response, 200, { approvals: application.pendingApprovals?.pendingRequests() ?? [] }); return; }
+  if (request.method === "GET" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/capabilities")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/capabilities".length)); if (!application.inspectSessionCapabilities) { json(response, 404, { error: "Capability inspection is unavailable." }); return; } try { json(response, 200, await application.inspectSessionCapabilities(sessionId)); } catch (error) { json(response, 404, { error: error instanceof Error ? error.message : "Session capability inspection failed." }); } return; }
   const gateway = application.gateway;
   if (targetId !== "local") { const target = targets.find((candidate) => candidate.id === targetId); if (!target?.endpoint) { json(response, 404, { error: "Target not found." }); return; } await proxyTarget(target.endpoint, request, url, response); return; }
   if (request.method === "GET" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/task")) { const sessionId = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/task".length)); const task = application.tasks ? await application.tasks.get(sessionId) : undefined; if (!task) { json(response, 404, { error: "Task was not found." }); return; } json(response, 200, task); return; }
@@ -222,25 +270,60 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
   const parts = url.pathname.split("/").filter(Boolean);
   if (request.method === "POST" && parts.length === 2 && parts[1] === "sessions") {
     const body = await readJson(request);
-    const model = body?.model && typeof body.model === "object" && typeof (body.model as Record<string, unknown>).provider === "string" && typeof (body.model as Record<string, unknown>).model === "string" ? { provider: (body.model as Record<string, string>).provider!, model: (body.model as Record<string, string>).model! } : undefined;
-    if (model && application.modelCatalog) { const available = await application.modelCatalog(); if (!available.some((option) => option.provider === model.provider && option.id === model.model)) { json(response, 400, { error: "Selected model is not currently available." }); return; } }
-    const events = await collect(gateway.execute({ type: "CreateSession", target: targetId, ...(typeof body?.sessionId === "string" ? { sessionId: body.sessionId } : {}), ...(model ? { model } : {}) }, {}));
-    const created = events.find((event): event is Extract<KernelEvent, { type: "SessionCreated" }> => event.type === "SessionCreated");
-    if (created) json(response, 200, created);
-    else json(response, 400, events.find((event) => event.type === "Error") ?? { error: "Could not create session." });
+    if (targetId !== "local" || principal.kind !== "human") { json(response, 403, { error: "SESSION_WORKSPACE_PERMISSION_DENIED" }); return; }
+    const rawModel = body?.model && typeof body.model === "object" ? body.model as Record<string, unknown> : undefined;
+    let model = rawModel && typeof rawModel.provider === "string" && typeof rawModel.model === "string" ? { provider: rawModel.provider, model: rawModel.model, ...(typeof rawModel.connectionId === "string" ? { connectionId: rawModel.connectionId } : {}), ...(typeof rawModel.modelRef === "string" ? { modelRef: rawModel.modelRef } : {}) } : undefined;
+    if (model && application.modelCatalog) { const available = await application.modelCatalog(); const selected = available.find((option) => optionMatchesSelection(option, model!)); if (!selected) { json(response, 400, { error: "Selected model is not currently available." }); return; } model = { ...model, ...(selected.capabilities ? { capabilities: selected.capabilities } : {}) }; }
+    if (body?.repository !== undefined && typeof body.repository !== "string") { json(response, 400, { error: "Repository must be a URL or supported Git remote." }); return; }
+    if (body?.savedProjectId !== undefined && typeof body.savedProjectId !== "string") { json(response, 400, { error: "Saved project ID is invalid." }); return; }
+    if (body?.repository && body.savedProjectId) { json(response, 400, { error: "Choose a repository to clone or a saved project to reopen, not both." }); return; }
+    if (body?.credentialIds !== undefined && (!Array.isArray(body.credentialIds) || body.credentialIds.some((id) => typeof id !== "string"))) { json(response, 400, { error: "Git credential selection is invalid." }); return; }
+    const isNewSession = typeof body?.sessionId !== "string";
+    const sessionId = isNewSession ? randomUUID() : body!.sessionId as string;
+    if (!isNewSession && (body?.repository || body?.savedProjectId || body?.gitCredential || body?.credentialIds)) { json(response, 400, { error: "Workspace options are only accepted when creating a new session." }); return; }
+    let sessionCredentialId: string | undefined;
+    const setupController = new AbortController();
+    request.once("aborted", () => setupController.abort());
+    response.once("close", () => { if (!response.writableEnded) setupController.abort(); });
+    try {
+      if (body?.gitCredential !== undefined) {
+        if (!isNewSession || !application.gitCredentials) throw new Error("Session credentials can only be supplied when creating a new local session.");
+        const credential = parseGitCredential(body.gitCredential, "session", sessionId);
+        sessionCredentialId = (await application.gitCredentials.create(credential)).id;
+      }
+      if (body?.repository || body?.savedProjectId || (Array.isArray(body?.credentialIds) && body.credentialIds.length) || sessionCredentialId) {
+        if (!application.workspaces) throw new Error("Session workspaces are unavailable.");
+      }
+      if (application.workspaces) await application.workspaces.createForSession(sessionId, { ...(typeof body?.repository === "string" && body.repository ? { repository: body.repository } : {}), ...(typeof body?.savedProjectId === "string" ? { savedProjectId: body.savedProjectId } : {}), credentialIds: [...(Array.isArray(body?.credentialIds) ? body.credentialIds as string[] : []), ...(sessionCredentialId ? [sessionCredentialId] : [])], signal: setupController.signal });
+      const events = await collect(gateway.execute({ type: "CreateSession", target: targetId, sessionId, ...((model ?? application.modelSelection) ? { model: model ?? application.modelSelection } : {}) }, {}));
+      const created = events.find((event): event is Extract<KernelEvent, { type: "SessionCreated" }> => event.type === "SessionCreated");
+      if (created) { const workspaceSummary = await application.workspaces?.summaryForSession(sessionId); json(response, 200, { ...created, ...(workspaceSummary ? { workspace: workspaceSummary } : {}) }); }
+      else { if (isNewSession) await application.workspaces?.deleteSessionWorkspace(sessionId, "delete").catch(() => undefined); if (sessionCredentialId) await application.gitCredentials?.delete(sessionCredentialId).catch(() => undefined); json(response, 400, events.find((event) => event.type === "Error") ?? { error: "Could not create session." }); }
+    } catch (error) { if (isNewSession) await application.workspaces?.deleteSessionWorkspace(sessionId, "delete").catch(() => undefined); if (sessionCredentialId) await application.gitCredentials?.delete(sessionCredentialId).catch(() => undefined); respondWorkspaceError(response, error); }
     return;
   }
   if (parts.length >= 3 && parts[1] === "sessions") {
     const sessionId = decodeURIComponent(parts[2]!);
+    if (request.method === "GET" && parts.length === 4 && parts[3] === "workspace") { const session = await application.conversations?.getSession(sessionId); if (!session) { json(response, 404, { error: "Session was not found." }); return; } const workspace = await application.workspaces?.summaryForSession(sessionId); if (!workspace) { json(response, 404, { error: "Session workspace was not found." }); return; } json(response, 200, { workspace }); return; }
     if (request.method === "GET" && parts.length === 3) {
       const session = await application.conversations?.getSession(sessionId);
       if (!session) { json(response, 404, { error: "Session was not found." }); return; }
-      json(response, 200, { id: session.id, state: session.state, status: sessionStatus(session.history ?? []), createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: session.model } : {}), history: session.history });
+      const requestedJob = url.searchParams.get("job");
+      const job = requestedJob ? application.promptSubmission?.jobs.store.get(requestedJob) : application.promptSubmission?.jobs.latest(sessionId);
+      if (requestedJob && (!job || job.sessionId !== sessionId)) { json(response, 404, { error: "Job was not found for this session." }); return; }
+      const jobs = application.promptSubmission?.jobs.sessionHistory(sessionId).map((entry) => ({ id: entry.id, mode: entry.mode ?? "agent", status: entry.status, ...(entry.historyBaseMessageCount === undefined ? {} : { historyBaseMessageCount: entry.historyBaseMessageCount }), createdAt: entry.createdAt, title: entry.input.slice(0, 80) })) ?? [];
+      const task = await application.tasks?.get(sessionId);
+      json(response, 200, { id: session.id, state: session.state, ...(await application.workspaces?.summaryForSession(sessionId) ? { workspace: await application.workspaces?.summaryForSession(sessionId) } : {}), jobs, ...(job ? { job: { id: job.id, mode: job.mode ?? "agent", status: job.status, ...(job.historyBaseMessageCount === undefined ? {} : { historyBaseMessageCount: job.historyBaseMessageCount }), activity: job.activity, failure: job.failure, verification: job.verification, checks: job.checks, truncated: job.truncated, updatedAt: job.updatedAt } } : {}), status: job?.status ?? task?.status ?? sessionStatus(session.history ?? []), createdAt: session.createdAt, ...(session.target ? { target: session.target } : {}), ...(session.model ? { model: session.model } : {}), history: session.history });
       return;
     }
     if (request.method === "POST" && parts.length === 4 && parts[3] === "messages") {
       const body = await readJson(request);
       if (typeof body?.input !== "string" || !body.input.trim()) { json(response, 400, { error: "input is required" }); return; }
+      if (application.promptSubmission) {
+        try { const receipt = await application.promptSubmission.submit({ content: body.input, sessionId, mode: body.mode === "agent" ? "agent" : "chat", idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : randomUUID() }, principal); json(response, 202, receipt); }
+        catch (error) { json(response, 409, { error: error instanceof Error ? error.message : "Job submission failed" }); }
+        return;
+      }
       response.writeHead(200, { "Cache-Control": "no-cache", "Content-Type": "application/x-ndjson; charset=utf-8", "Connection": "keep-alive" });
       // The execution belongs to the session/task, not to the HTTP stream.
       // A browser reconnect must be able to observe the same work instead of
@@ -257,13 +340,21 @@ async function api(application: WebApplication, url: URL, request: IncomingMessa
       return;
     }
     if (request.method === "POST" && parts.length === 4 && parts[3] === "cancel") {
+      await application.promptSubmission?.jobs.cancelSession(sessionId);
       await collect(gateway.execute({ type: "CancelExecution", sessionId }, {}));
       json(response, 204, null);
       return;
     }
     if (request.method === "DELETE" && parts.length === 3) {
+      if (application.promptSubmission?.jobs.store.list().some((job) => job.sessionId === sessionId && ["queued", "running", "needs_attention"].includes(job.status))) { json(response, 409, { error: "Cancel active jobs before deleting this session." }); return; }
+      const body = await readJson(request); const disposition = body?.disposition;
+      if (application.workspaces && disposition !== "keep" && disposition !== "delete") { json(response, 400, { error: "Choose whether to keep the project, delete its files, or cancel." }); return; }
+      const session = await application.conversations?.getSession(sessionId); if (!session || session.state !== "open") { json(response, 404, { error: "Session was not found." }); return; }
+      let savedProjectId: string | undefined;
+      if (application.workspaces && (disposition === "keep" || disposition === "delete")) savedProjectId = (await application.workspaces.deleteSessionWorkspace(sessionId, disposition)).savedProjectId;
+      await application.gitCredentials?.deleteSessionCredentials(sessionId);
       await collect(gateway.execute({ type: "CloseSession", sessionId }, {}));
-      json(response, 204, null);
+      json(response, 200, { deleted: true, ...(savedProjectId ? { savedProjectId } : {}) });
       return;
     }
   }
@@ -284,6 +375,23 @@ async function staticFile(root: string, pathname: string, response: ServerRespon
   try { await stat(target); } catch { json(response, 404, { error: "Not found" }); return; }
   response.writeHead(200, { "Content-Type": contentTypes[extname(target)] ?? "application/octet-stream" });
   createReadStream(target).pipe(response);
+}
+
+function parseGitCredential(value: unknown, scope: "global" | "session", sessionId?: string): GitCredentialInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "Git credential is invalid.", retryable: false });
+  const body = value as Record<string, unknown>;
+  if (typeof body.name !== "string" || (body.type !== "ssh" && body.type !== "https")) throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "Git credential metadata is invalid.", retryable: false });
+  if (body.type === "ssh") {
+    if (typeof body.privateKey !== "string" || typeof body.knownHosts !== "string" || (body.publicKey !== undefined && typeof body.publicKey !== "string") || (body.sshConfig !== undefined && typeof body.sshConfig !== "string")) throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "SSH credential files are invalid.", retryable: false });
+    return { name: body.name, type: "ssh", scope, ...(sessionId ? { sessionId } : {}), privateKey: body.privateKey, knownHosts: body.knownHosts, ...(typeof body.publicKey === "string" ? { publicKey: body.publicKey } : {}), ...(typeof body.sshConfig === "string" ? { sshConfig: body.sshConfig } : {}) };
+  }
+  if (typeof body.username !== "string" || typeof body.password !== "string") throw new HarnessFailure({ code: "VALIDATION_FAILED", message: "HTTPS credential fields are invalid.", retryable: false });
+  return { name: body.name, type: "https", scope, ...(sessionId ? { sessionId } : {}), username: body.username, password: body.password };
+}
+function respondWorkspaceError(response: ServerResponse, error: unknown): void {
+  const known = error instanceof HarnessFailure ? error.error : undefined;
+  const status = known?.code === "AUTHORIZATION_DENIED" || known?.code === "POLICY_VIOLATION" ? 403 : known?.code === "VALIDATION_FAILED" ? 400 : known?.code === "TIMEOUT" ? 504 : known?.code === "CAPABILITY_UNAVAILABLE" ? 502 : known ? 409 : 500;
+  json(response, status, { error: known?.message ?? "Workspace operation failed.", ...(known ? { code: known.code } : {}) });
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown> | undefined> {

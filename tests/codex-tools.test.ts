@@ -97,7 +97,9 @@ describe("CLI → agent → Codex outgoing tools", () => {
       const terminal = runTerminal(app.gateway, input, renderer, sink);
       inputStream.end("Create a file named porta-live.txt containing PORTA_TOOL_OK. Read the file back and reply only with its contents.\ny\ny\n");
       await terminal;
-      expect(await readFile(join(root, "porta-live.txt"), "utf8")).toBe("PORTA_TOOL_OK");
+      const sessionWorkspaceRecord = (await app.workspaces.activeWorkspaces())[0]!;
+      const sessionWorkspace = join(app.workspaces.root, sessionWorkspaceRecord.workspaceId);
+      expect(await readFile(join(sessionWorkspace, "porta-live.txt"), "utf8")).toBe("PORTA_TOOL_OK");
       expect(bodies).toHaveLength(3);
       for (let index = 0; index < bodies.length; index++) expectDefinitions(bodies[index]!, requests[index]!);
       const writeResult = bodies[1]!.input.find((item) => item.type === "function_call_output")!;

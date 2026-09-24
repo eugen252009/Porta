@@ -6,6 +6,7 @@ import { LinearTextSearchEngine, SearchDocument, SearchEngine, SearchQuery, Sear
 import { JsonValue, ModelContext, ModelProvider, ToolContext, ToolDescriptor, ToolInvocation, ToolProvider, ToolResult, failure } from "./contracts.js";
 import { DirectFilesystemMutationEngine, MutationEngine, MutationPatchRequest, MutationWriteRequest, contentHash } from "./mutation.js";
 import { WorkspaceBoundary } from "./workspace.js";
+import { WorkspaceFileAccess } from "./workspace-permissions.js";
 
 export interface FilesystemProviderConfig { root: string; maxExactContextBytes?: number; maxReadBytes?: number; maxSummaryChars?: number; mutation?: { enabled?: boolean; maxWriteBytes?: number; maxPatchTargetBytes?: number } }
 const configSchema = z.object({ root: z.string().min(1), maxExactContextBytes: z.number().int().positive().default(65536), maxReadBytes: z.number().int().positive().default(8 * 1024 * 1024), maxSummaryChars: z.number().int().positive().default(12000), mutation: z.object({ enabled: z.boolean().default(false), maxWriteBytes: z.number().int().positive().default(2 * 1024 * 1024), maxPatchTargetBytes: z.number().int().positive().default(8 * 1024 * 1024) }).optional() });
@@ -17,9 +18,9 @@ const searchSchema = z.object({ query: z.string().min(1), mode: z.enum(["text", 
 
 export class FilesystemSearchSource implements SearchSource {
   readonly kind = "filesystem";
-  constructor(readonly nativeRoot: string, private readonly maxReadBytes = 8 * 1024 * 1024) {}
+  constructor(readonly nativeRoot: string, private readonly maxReadBytes = 8 * 1024 * 1024, private readonly access?: WorkspaceFileAccess) {}
   async documents(context: ToolContext): Promise<readonly SearchDocument[]> { const documents: SearchDocument[] = []; await this.walk(this.nativeRoot, "", documents, context); return documents; }
-  private async walk(directory: string, prefix: string, documents: SearchDocument[], context: ToolContext): Promise<void> { if (context.signal.aborted) throw failure("CANCELLED", "Search was cancelled."); for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) { if (entry.isSymbolicLink()) continue; const relativePath = prefix ? join(prefix, entry.name) : entry.name; const target = join(directory, entry.name); if (entry.isDirectory()) await this.walk(target, relativePath, documents, context); else if (entry.isFile()) { const stat = await fs.stat(target); if (stat.size > this.maxReadBytes) continue; const buffer = await fs.readFile(target); if (!buffer.includes(0)) documents.push({ id: relativePath, content: buffer.toString("utf8") }); } } }
+  private async walk(directory: string, prefix: string, documents: SearchDocument[], context: ToolContext): Promise<void> { if (context.signal.aborted) throw failure("CANCELLED", "Search was cancelled."); for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) { if (entry.isSymbolicLink()) continue; const relativePath = prefix ? join(prefix, entry.name) : entry.name; const target = join(directory, entry.name); if (this.access) { if (this.access.isSensitive(relativePath)) continue; try { await this.access.resolve(relativePath); } catch { continue; } } if (entry.isDirectory()) await this.walk(target, relativePath, documents, context); else if (entry.isFile()) { const stat = await fs.stat(target); if (stat.size > this.maxReadBytes) continue; const buffer = await fs.readFile(target); if (!buffer.includes(0)) documents.push({ id: relativePath, content: buffer.toString("utf8") }); } } }
 }
 
 export class FilesystemToolProvider implements ToolProvider {
@@ -29,10 +30,11 @@ export class FilesystemToolProvider implements ToolProvider {
   private readonly boundary: WorkspaceBoundary;
   private readonly searchSource: FilesystemSearchSource;
   private readonly mutationEngine?: MutationEngine;
-  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer(), private readonly searchEngine: SearchEngine = new LinearTextSearchEngine(), mutationEngine?: MutationEngine) {
+  constructor(config: FilesystemProviderConfig, private readonly reducer: ContentReducer = new DeterministicContentReducer(), private readonly searchEngine: SearchEngine = new LinearTextSearchEngine(), mutationEngine?: MutationEngine, private readonly access?: WorkspaceFileAccess) {
     this.config = configSchema.parse(config);
     this.boundary = new WorkspaceBoundary(this.config.root); this.root = this.boundary.root;
-    this.searchSource = new FilesystemSearchSource(this.root, this.config.maxReadBytes);
+    if (this.access && this.access.boundary.root !== this.root) throw failure("VALIDATION_FAILED", "Filesystem permission root does not match the provider root.");
+    this.searchSource = new FilesystemSearchSource(this.root, this.config.maxReadBytes, this.access);
     if (this.config.mutation?.enabled) this.mutationEngine = mutationEngine ?? new DirectFilesystemMutationEngine(this.boundary, { maxWriteBytes: this.config.mutation.maxWriteBytes, maxPatchTargetBytes: this.config.mutation.maxPatchTargetBytes });
   }
   async listTools(_context: ToolContext): Promise<readonly ToolDescriptor[]> {
@@ -72,16 +74,16 @@ export class FilesystemToolProvider implements ToolProvider {
   private async listDirectory(input: JsonValue): Promise<ToolResult> {
     const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const info = await fs.stat(target); if (!info.isDirectory()) return { ok: false, error: failure("VALIDATION_FAILED", "list_directory requires a directory.").error };
     const names = (await fs.readdir(target)).sort((a, b) => a.localeCompare(b)); const entries = [];
-    for (const name of names) { const entryPath = join(target, name); const entry = await fs.lstat(entryPath); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other"; entries.push({ name, kind, ...(entry.isFile() ? { size: entry.size } : {}) }); }
+    for (const name of names) { const entryPath = join(target, name); if (this.access) { const path = relative(this.root, entryPath); if (this.access.isSensitive(path)) continue; try { await this.access.resolve(path); } catch { continue; } } const entry = await fs.lstat(entryPath); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other"; entries.push({ name, kind, ...(entry.isFile() ? { size: entry.size } : {}) }); }
     return { ok: true, output: { path: parsed.data.path, entries } };
   }
-  private async search(input: JsonValue, context: ToolContext): Promise<ToolResult> { const parsed = searchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result: SearchResult = await this.searchEngine.search(this.searchSource, parsed.data as SearchQuery, context); return { ok: true, output: result as unknown as JsonValue }; }
-  private async writeFile(input: JsonValue, context: ToolContext): Promise<ToolResult> { if (!this.mutationEngine) return unavailableMutation(); const parsed = writeSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result = await this.mutationEngine.write(parsed.data as MutationWriteRequest, context); return { ok: true, output: result as unknown as JsonValue }; }
-  private async patchFile(input: JsonValue, context: ToolContext): Promise<ToolResult> { if (!this.mutationEngine) return unavailableMutation(); const parsed = patchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result = await this.mutationEngine.patch(parsed.data as MutationPatchRequest, context); return { ok: true, output: result as unknown as JsonValue }; }
+  private async search(input: JsonValue, context: ToolContext): Promise<ToolResult> { const parsed = searchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const result: SearchResult = await (this.access ? new LinearTextSearchEngine() : this.searchEngine).search(this.searchSource, parsed.data as SearchQuery, context); return { ok: true, output: result as unknown as JsonValue }; }
+  private async writeFile(input: JsonValue, context: ToolContext): Promise<ToolResult> { if (!this.mutationEngine) return unavailableMutation(); const parsed = writeSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); if (this.access) await this.access.resolve(parsed.data.path); const result = await this.mutationEngine.write(parsed.data as MutationWriteRequest, context); return { ok: true, output: result as unknown as JsonValue }; }
+  private async patchFile(input: JsonValue, context: ToolContext): Promise<ToolResult> { if (!this.mutationEngine) return unavailableMutation(); const parsed = patchSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); if (this.access) await this.access.resolve(parsed.data.path); const result = await this.mutationEngine.patch(parsed.data as MutationPatchRequest, context); return { ok: true, output: result as unknown as JsonValue }; }
   private async stat(input: JsonValue): Promise<ToolResult> {
     const parsed = pathSchema.safeParse(input); if (!parsed.success) return invalid(parsed.error.issues); const target = await this.safePath(parsed.data.path); const entry = await fs.stat(target); const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "file" : "other"; const sha256 = entry.isFile() && entry.size <= this.config.maxReadBytes ? contentHash(await fs.readFile(target)) : undefined; return { ok: true, output: { path: parsed.data.path, kind, size: entry.size, ...(sha256 ? { sha256 } : {}) } };
   }
-  private async safePath(requested: string): Promise<string> { return this.boundary.resolveRead(requested); }
+  private async safePath(requested: string): Promise<string> { if (this.access) { const result = await this.access.resolve(requested); if (!result.exists) throw failure("CAPABILITY_UNAVAILABLE", "Filesystem path does not exist."); return result.path; } return this.boundary.resolveRead(requested); }
 }
 
 export class DeterministicContentReducer implements ContentReducer {

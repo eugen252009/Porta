@@ -17,7 +17,7 @@ describe("architecture boundaries", () => {
   });
   it("keeps OpenAI-compatible knowledge confined to its adapter", () => {
     const sourceFiles = files(join(process.cwd(), "src"));
-    for (const file of sourceFiles.filter((file) => !file.includes("model-openai-compatible") && !file.includes("model-openai-codex") && !file.includes("codex-auth") && !file.includes("model-picker") && !file.includes("porta-application") && !file.includes("porta-config") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/openai/i);
+    for (const file of sourceFiles.filter((file) => !file.includes("model-openai-compatible") && !file.includes("model-openai-codex") && !file.includes("codex-auth") && !file.includes("model-picker") && !file.includes("porta-application") && !file.includes("porta-config") && !file.includes("openai-api") && !file.includes("web-server") && !file.endsWith("src/index.ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/openai/i);
   });
   it("keeps OAuth SDK types and behavior out of the provider-neutral core", () => {
     const allowed = new Set(["src/adapters/codex-auth.ts", "src/codex-auth-cli.ts"].map((file) => join(process.cwd(), file)));

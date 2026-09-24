@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthInteraction, OAuthAuth } from "@earendil-works/pi-ai";
-import { CodexAuth, CodexCredentialStore, type CodexCredential } from "../src/adapters/codex-auth.js";
+import { CodexAuth, CodexCredentialStore, CodexWebAuthService, type CodexCredential } from "../src/adapters/codex-auth.js";
 import { runCodexAuthCommand } from "../src/codex-auth-cli.js";
 
 const roots: string[] = [];
@@ -127,6 +127,17 @@ describe("private Codex credentials", () => {
     if (kind === "insecure") { await mkdir(store.directory); await chmod(store.directory, 0o755); }
     else { await mkdir(join(root, "target"), { mode: 0o700 }); await symlink(join(root, "target"), store.directory); }
     await expect(store.read()).rejects.toMatchObject({ error: { code: "STORAGE_FAILED" } });
+  });
+});
+
+describe("shared web Codex auth orchestration", () => {
+  it("shares one pending login and exposes only safe state", async () => {
+    const { store } = await fixture(); let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    const auth = new CodexAuth(store, oauth({ login: async (ui) => { ui.notify({ type: "device_code", verificationUri: "https://openai.example/verify", userCode: "ABCD" }); await gate; return credential(); } }));
+    const web = new CodexWebAuthService(auth); const first = web.startLogin(); const second = web.startLogin();
+    expect(second.id).toBe(first.id); expect((await web.loginStatus(first.id!)).authorization).toEqual({ kind: "device_code", verificationUri: "https://openai.example/verify", userCode: "ABCD" });
+    expect(JSON.stringify(await web.loginStatus(first.id!))).not.toContain("secret-"); release(); for (let attempt = 0; attempt < 20 && (await web.status()).status !== "connected"; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await web.status()).toMatchObject({ status: "connected" }); await web.disconnect(); expect(await web.status()).toEqual({ status: "disconnected" });
   });
 });
 

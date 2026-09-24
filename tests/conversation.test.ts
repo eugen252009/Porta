@@ -19,6 +19,26 @@ function textAndHistoryProvider() {
 }
 
 describe("Porta conversation sessions", () => {
+  it("uses one conversational runtime while exposing usable tools", async () => {
+    const tools = new ToolRouter(); await tools.register("scratchpad", new MockToolProvider("scratchpad"), context()); await tools.register("task", new MockToolProvider("task"), context());
+    const model = new ScriptedToolModelProvider([[{ type: "text", text: "Hey there." }]]); const store = new MemoryConversationStore(); const gateway = new InteractiveApprovalGateway(model, tools, new (await import("../src/approval-pending.js")).PendingApprovalProvider(), new AllowAllToolAuthorizationPolicy(), undefined, store); const id = await session(gateway);
+    await collect(gateway.execute({ type: "SubmitInput", sessionId: id, input: "hey" }, {}));
+    const request = model.received[0]!; expect(request.messages).toEqual([{ role: "user", content: "hey" }]); expect(request.control?.map((entry) => entry.content).join("\n")).toContain("Use a tool only when it is necessary"); expect(request.control?.map((entry) => entry.content).join("\n")).toContain("An internal runtime job is not a user task"); expect(request.control?.map((entry) => entry.content).join("\n")).toContain("do not call task/create"); expect(request.control?.map((entry) => entry.content).join("\n")).not.toContain("P1"); expect(request.tools?.map((tool) => tool.id)).toEqual(expect.arrayContaining([expect.stringMatching(/^task\//), expect.stringMatching(/^scratchpad\//)]));
+  });
+
+  it("does not bootstrap tools for ordinary conversational prompts", async () => {
+    const model = new ScriptedToolModelProvider([[{ type: "text", text: "Hello." }], [{ type: "text", text: "Sure." }], [{ type: "text", text: "SHA-256 is a hash function." }], [{ type: "text", text: "A task scheduler coordinates work over time." }], [{ type: "text", text: "No problem." }]]); const gateway = new InteractiveApprovalGateway(model, new ToolRouter(), new (await import("../src/approval-pending.js")).PendingApprovalProvider(), new AllowAllToolAuthorizationPolicy()); const id = await session(gateway);
+    const events: KernelEvent[] = []; for (const input of ["hey", "hallo", "thanks", "What is SHA-256?", "Explain what a task scheduler is."]) events.push(...await collect(gateway.execute({ type: "SubmitInput", sessionId: id, input }, {})));
+    expect(model.received).toHaveLength(5); expect(events.filter((event) => event.type === "ToolRequested")).toEqual([]);
+  });
+
+  it("lets explicit requests drive tool calls without a mode classifier", async () => {
+    const tools = new ToolRouter(); await tools.register("scratchpad", new MockToolProvider("scratchpad"), context());
+    const model = new ScriptedToolModelProvider([[{ type: "tool", id: "note", toolId: "scratchpad/echo", input: { value: "requested" } }], [{ type: "text", text: "Done." }]]); const gateway = new InteractiveApprovalGateway(model, tools, new (await import("../src/approval-pending.js")).PendingApprovalProvider(), new AllowAllToolAuthorizationPolicy()); const id = await session(gateway);
+    await collect(gateway.execute({ type: "SubmitInput", sessionId: id, input: "use the scratchpad tool" }, {}));
+    expect(model.received[0]?.tools?.map((tool) => tool.id)).toEqual(expect.arrayContaining([expect.stringMatching(/^scratchpad\//)]));
+  });
+
   it("forwards completed text history to the next execution", async () => {
     const model = textAndHistoryProvider(); const store = new MemoryConversationStore();
     const gateway = new InteractiveApprovalGateway(model, new ToolRouter(), new (await import("../src/approval-pending.js")).PendingApprovalProvider(), new AllowAllToolAuthorizationPolicy(), undefined, store);

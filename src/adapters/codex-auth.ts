@@ -6,13 +6,16 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AuthInteraction, OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
 import { z } from "zod";
 import { failure } from "../contracts.js";
 
 const credentialSchema = z.object({ type: z.literal("oauth"), access: z.string().min(1), refresh: z.string().min(1), expires: z.number().finite(), accountId: z.string().min(1) });
 export type CodexCredential = z.infer<typeof credentialSchema>;
+export const codexProviderModelCatalog = Object.values(OPENAI_CODEX_MODELS).map((entry) => ({ id: entry.id, displayName: entry.name }));
 export interface CodexAccess { access: string; accountId: string }
 export interface CodexAuthSource { getAccess(signal: AbortSignal): Promise<CodexAccess> }
+export type CodexAccountState = { status: "connected" | "expired" | "disconnected"; expiresAt?: string };
 export const codexLoginHint = "Run 'porta login openai-codex' to sign in with your ChatGPT account.";
 const storageError = () => failure("STORAGE_FAILED", "Cannot access private Codex credentials. Check the auth directory permissions and lock; credentials were not overwritten.");
 const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -20,7 +23,7 @@ const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code ===
 /** Private, atomic, cross-process locked token storage. Never imports another application's credentials. */
 export class CodexCredentialStore {
   readonly directory: string;
-  constructor(directory = process.env.PORTA_AUTH_DIR ?? join(homedir(), ".porta", "auth")) { this.directory = resolve(directory); }
+  constructor(directory = process.env.PORTA_AUTH_DIR ?? join(process.env.PORTA_DATA_DIR ?? join(homedir(), ".porta"), "auth")) { this.directory = resolve(directory); }
   private get file(): string { return join(this.directory, "openai-codex.json"); }
 
   private async checkDirectory(create: boolean): Promise<boolean> {
@@ -115,6 +118,13 @@ export class CodexAuth implements CodexAuthSource {
     } catch { signal.throwIfAborted(); throw failure("AUTHORIZATION_DENIED", `Codex login failed. ${codexLoginHint}`); }
   }
   async logout(signal = AbortSignal.timeout(15000)): Promise<void> { await this.store.delete(signal); }
+  async accountState(signal = AbortSignal.timeout(5000)): Promise<CodexAccountState> {
+    try {
+      const credential = await this.store.read(signal);
+      if (!credential) return { status: "disconnected" };
+      return { status: credential.expires > Date.now() ? "connected" : "expired", expiresAt: new Date(credential.expires).toISOString() };
+    } catch { signal.throwIfAborted(); return { status: "disconnected" }; }
+  }
   async getAccess(signal: AbortSignal): Promise<CodexAccess> {
     try {
       const stored = await this.store.read(signal);
@@ -127,4 +137,39 @@ export class CodexAuth implements CodexAuthSource {
       return { access: credential.access, accountId: credential.accountId };
     } catch { signal.throwIfAborted(); throw failure("AUTHORIZATION_DENIED", `Codex credentials are missing, unreadable, or could not be refreshed. ${codexLoginHint}`); }
   }
+}
+
+export type CodexWebLoginState = "disconnected" | "starting" | "awaiting_user" | "connected" | "expired" | "failed" | "cancelled";
+export interface CodexWebLoginSnapshot { id?: string; status: CodexWebLoginState; authorization?: { kind: "url"; url: string; instructions?: string } | { kind: "device_code"; verificationUri: string; userCode: string; instructions?: string }; error?: string; expiresAt?: string }
+
+/** Web orchestration for the same CodexAuth used by the CLI; it never exposes credentials. */
+export class CodexWebAuthService {
+  private pending?: { snapshot: CodexWebLoginSnapshot; controller: AbortController; promise: Promise<void> };
+  private last: CodexWebLoginSnapshot = { status: "disconnected" };
+  constructor(readonly auth = new CodexAuth()) {}
+  async status(): Promise<CodexWebLoginSnapshot> {
+    if (this.pending) return { ...this.pending.snapshot };
+    const account = await this.auth.accountState();
+    if (account.status === "connected") return { status: "connected", expiresAt: account.expiresAt };
+    if (account.status === "expired") return { status: "expired", expiresAt: account.expiresAt };
+    return this.last.status === "failed" || this.last.status === "cancelled" ? { ...this.last } : { status: "disconnected" };
+  }
+  startLogin(method: "browser" | "device_code" = "device_code"): CodexWebLoginSnapshot {
+    if (this.pending) return { ...this.pending.snapshot };
+    const id = randomUUID(); const controller = new AbortController();
+    const snapshot: CodexWebLoginSnapshot = { id, status: "starting" };
+    const pending = { snapshot, controller, promise: Promise.resolve() };
+    this.pending = pending; this.last = snapshot;
+    pending.promise = this.auth.login({
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15 * 60 * 1000)]),
+      async prompt(prompt) { if (prompt.type === "select") return method; throw failure("CANCELLED", "Codex login requires user authorization."); },
+      notify: (event) => {
+        if (event.type === "auth_url") pending.snapshot = { ...pending.snapshot, status: "awaiting_user", authorization: { kind: "url", url: event.url, ...(event.instructions ? { instructions: event.instructions } : {}) } };
+        else if (event.type === "device_code") pending.snapshot = { ...pending.snapshot, status: "awaiting_user", authorization: { kind: "device_code", verificationUri: event.verificationUri, userCode: event.userCode } };
+      },
+    }).then(async () => { const account = await this.auth.accountState(); pending.snapshot = { id, status: account.status === "connected" ? "connected" : "expired", ...(account.expiresAt ? { expiresAt: account.expiresAt } : {}) }; this.last = pending.snapshot; }).catch(() => { pending.snapshot = { id, status: controller.signal.aborted ? "cancelled" : "failed", error: controller.signal.aborted ? "Login cancelled." : "Codex login failed." }; this.last = pending.snapshot; }).finally(() => { if (this.pending?.snapshot.id === id) this.pending = undefined; });
+    return { ...snapshot };
+  }
+  async loginStatus(id: string): Promise<CodexWebLoginSnapshot> { if (this.pending?.snapshot.id === id) return { ...this.pending.snapshot }; if (this.last.id === id) return { ...this.last }; return this.status(); }
+  async disconnect(): Promise<void> { this.pending?.controller.abort(); await this.pending?.promise.catch(() => {}); await this.auth.logout(); this.last = { status: "disconnected" }; }
 }
