@@ -27,6 +27,10 @@ describe("Porta web server", () => {
       expect(version.status).toBe(200);
       expect(version.headers.get("content-type")).toContain("application/json");
       expect(await version.json()).toMatchObject({ version: "0.1.0", commit: "unknown", buildId: "development", dirty: null });
+      const hello = await fetch(`http://127.0.0.1:${address.port}/hello`);
+      expect(hello.status).toBe(200);
+      expect(hello.headers.get("content-type")).toContain("text/plain");
+      expect(await hello.text()).toBe("hello");
       const uiCookie = "porta_ui=test-ui";
       const blockedApp = await fetch(`http://127.0.0.1:${address.port}/app`, { redirect: "manual" });
       expect(blockedApp.status).toBe(303);
