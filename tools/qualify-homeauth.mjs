@@ -33,7 +33,8 @@ async function porta(publicKey, apiOnly, mode = 'required') {
   const original = auth.authenticate.bind(auth);
   auth.authenticate = (material) => { const principal = original(material); if (principal) observed.push({ digest: sha(material.admission ?? material.authorization.slice(7)), principal }); return principal; };
   const manager = new PluginManager(); await manager.register([plugin]); managers.push([manager, plugin]);
-  const server = createPortaWebServer({ gateway: { async *execute() {} }, modelCatalog: async () => [], requestAuthenticators: manager.resolveAll({ capability: 'auth.request-authentication', version: '1' }) }, { port: 0, apiOnly, apiAuthentication: mode });
+  const uiSessions = new Map([['porta-fixture', Date.now() + 3_600_000]]);
+  const server = createPortaWebServer({ gateway: { async *execute() {} }, modelCatalog: async () => [], uiSessions, requestAuthenticators: manager.resolveAll({ capability: 'auth.request-authentication', version: '1' }) }, { port: 0, apiOnly, apiAuthentication: mode });
   await server.listen(); servers.push(server);
   return { base: `http://127.0.0.1:${server.server.address().port}`, observed };
 }
@@ -125,27 +126,18 @@ try {
   db.close();
   run(authorityBin, ['grant', '--config', config, '--identity', 'fixture', '--service-id', '3']);
   const human = await post(`${base}/api/admission`, undefined, { cookie: `homeauth_session=${cookie.toString('base64url')}` });
-  const uiProxy = await sidecar(ui.base, 'native');
-  const humanHeaders = { authorization: `Bearer ${human.token}` };
-  assert.equal((await fetch(`${uiProxy}/app`, { headers: humanHeaders })).status, 200);
-  const who = await fetch(`${uiProxy}/api/models`, { headers: humanHeaders });
-  assert.equal(who.status, 200);
-  assert(ui.observed.some(x => x.digest === sha(human.token) && x.principal.kind === 'human' && x.principal.identity === 'homeauth:human:fixture'));
-  assert(ui.observed.some(x => x.digest === sha(human.token)));
-  report.authorityBrowserSessionIssuanceToProtectedUIAndPrincipal = 'PASS (seeded session; no passkey ceremony)';
-  const browserHeaders = { host: 'porta.fixture', cookie: `homeauth_session=${cookie.toString('base64url')}` };
-  const admissionRouteObservationStart = ui.observed.length;
-  const proxyUI = await fetch(`${base}/app`, { headers: browserHeaders, redirect: 'manual' });
-  assert.equal(proxyUI.status, 200);
-  const proxyPrincipal = await fetch(`${base}/api/models`, { headers: browserHeaders });
-  assert.equal(proxyPrincipal.status, 200, 'Authority admission route must reach Porta');
-  assert(ui.observed.slice(admissionRouteObservationStart).some(x => x.principal.identity === 'homeauth:human:fixture' && x.principal.kind === 'human'));
-  assert.equal((await fetch(`${base}/api/models`, { headers: { ...browserHeaders, authorization: 'Bearer invalid' }, redirect: 'manual' })).status, 403);
-  assert.equal((await fetch(`${base}/app`, { headers: { ...browserHeaders, 'HomeAuth-Admission': human.token }, redirect: 'manual' })).status, 401);
-  const preserved = await fetch(`${base}/api/models`, { headers: { host: '127.0.0.1', authorization: `Bearer ${human.token}` } });
-  assert.equal(preserved.status, 200);
-  assert(ui.observed.some(x => x.digest === sha(human.token) && x.principal.identity === 'homeauth:human:fixture'));
-  report.authorityAdmissionRouteWithoutSidecar = 'PASS (browser session to protected UI/API; original admission preserved when supplied)';
+  report.authorityIssuesAdmissionFromSeededBrowserSession = 'PASS (seeded authority session; no passkey ceremony)';
+  // Porta's browser listener keeps its own local session contract. A HomeAuth
+  // admission forwarded for the machine API cannot replace that session.
+  const portaCookie = { cookie: 'porta_ui=porta-fixture' };
+  assert.equal((await fetch(`${ui.base}/app`, { headers: portaCookie })).status, 200);
+  assert.equal((await fetch(`${ui.base}/api/models`, { headers: portaCookie })).status, 200);
+  assert.equal((await fetch(`${ui.base}/app`, { headers: { ...portaCookie, 'HomeAuth-Admission': 'spoofed' } })).status, 200);
+  assert.equal((await fetch(`${ui.base}/api/models`, { headers: { ...portaCookie, 'HomeAuth-Admission': human.token } })).status, 200);
+  assert.equal((await fetch(`${ui.base}/app`, { headers: { 'HomeAuth-Admission': human.token }, redirect: 'manual' })).status, 303);
+  assert.equal((await fetch(`${ui.base}/api/models`, { headers: { 'HomeAuth-Admission': human.token } })).status, 401);
+  assert.equal(ui.observed.length, 0, 'the browser listener must not invoke machine/API authenticators');
+  report.portaBrowserSessionAndAPISessionIsolation = 'PASS (seeded Porta session; no passkey ceremony; HomeAuth admission is not a browser login)';
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
   console.log(JSON.stringify({ ...report, result: 'FAIL', failure: error instanceof assert.AssertionError ? error.message : `Local qualification failed (${error?.name}); no credentials logged` }, null, 2));
