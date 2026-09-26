@@ -6,7 +6,7 @@ import { createSecureServer } from "node:http2";
 import { stat } from "node:fs/promises";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import { ApplicationGateway, HarnessFailure, KernelCommand, KernelEvent, ModelOption, ModelSelection } from "./contracts.js";
+import { ApplicationGateway, HarnessFailure, KernelCommand, KernelEvent, ModelOption, ModelSelection, RequestAuthenticator, RequestPrincipal } from "./contracts.js";
 import { TaskStore } from "./task.js";
 import { attentionFor } from "./attention.js";
 import { ProviderRegistry, ProviderConfig } from "./provider-registry.js";
@@ -30,6 +30,7 @@ import { handleOpenAIChat, handleOpenAIModels } from "./openai-api.js";
 import { CodexWebAuthService } from "./adapters/codex-auth.js";
 import type { SessionWorkspaceManager, CreateWorkspaceInput } from "./session-workspaces.js";
 import type { GitCredentialStore, GitCredentialInput, GitCredentialType } from "./git-credentials.js";
+import { authenticateMaterial, authenticationHeaders, AuthenticationRejected, principalConsensus } from "./request-authentication.js";
 
 export interface WebApplication {
   gateway: ApplicationGateway;
@@ -56,6 +57,7 @@ export interface WebApplication {
   uiSessionToken?: string;
   webauthn?: WebAuthnService;
   uiSessions?: Map<string, number>;
+  requestAuthenticators?: readonly RequestAuthenticator[];
   inspectSessionCapabilities?: (sessionId: string) => Promise<unknown>;
   developmentRunner?: Pick<DevelopmentRunner, "intervene" | "wake" | "release" | "recover">;
   openAICodexAuth?: CodexWebAuthService;
@@ -73,6 +75,8 @@ export interface WebServerOptions {
   tls?: { mode: "disabled" | "proxy" | "native"; certificatePath?: string; privateKeyPath?: string };
   extensionOrigins?: readonly string[];
   apiOnly?: boolean;
+  /** Required forbids static-bearer-only access; compatible retains the existing API clients. */
+  apiAuthentication?: "compatible" | "required";
 }
 
 const contentTypes: Record<string, string> = {
@@ -83,12 +87,13 @@ const contentTypes: Record<string, string> = {
 };
 
 export function createPortaWebServer(application: WebApplication, options: WebServerOptions = {}) {
+  if (options.apiAuthentication === "required" && !application.requestAuthenticators?.length) throw new Error("Required admission authentication needs a request authenticator.");
   const webRoot = options.webRoot ?? join(process.cwd(), "web");
   const targets = [{ id: "local", displayName: "Local", kind: "local" as const }, ...(options.targets ?? []).filter((target) => target.id !== "local")];
   const uiSessions = application.uiSessions ?? new Map<string, number>();
   const federatedNodeCache = new Map<string, FederatedNodeCache>();
   const tls = options.tls ?? { mode: "disabled" as const };
-  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache, options.apiOnly ?? false); };
+  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache, options.apiOnly ?? false, options.apiAuthentication ?? "compatible"); };
   const server = tls.mode === "native" ? createNativeTlsServer(tls, handler) : createServer(handler);
   return {
     server,
@@ -118,13 +123,18 @@ function createNativeTlsServer(tls: NonNullable<WebServerOptions["tls"]>, handle
   return createSecureServer({ cert: certificate, key: privateKey, allowHTTP1: true }, handler as any);
 }
 
-async function route(application: WebApplication, webRoot: string, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>, apiOnly: boolean): Promise<void> {
+async function route(application: WebApplication, webRoot: string, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>, apiOnly: boolean, apiAuthentication: "compatible" | "required"): Promise<void> {
   try {
     const url = new URL(request.url ?? "/", "http://localhost");
     const machineAPI = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
     if (apiOnly && !machineAPI && url.pathname !== "/version" && url.pathname !== "/ready") { json(response, 404, { error: "Not found" }); return; }
     if (!apiOnly && machineAPI) { json(response, 404, { error: "Not found" }); return; }
-    if (apiOnly && machineAPI && process.env.PORTA_LLM_API_SECRET && request.headers.authorization !== `Bearer ${process.env.PORTA_LLM_API_SECRET}`) { json(response, 401, { error: "unauthorized" }); return; }
+    if (apiOnly && machineAPI) {
+      if (application.requestAuthenticators?.length) authenticateMachineRequest(application, request, apiAuthentication);
+      else if (process.env.PORTA_LLM_API_SECRET && request.headers.authorization !== `Bearer ${process.env.PORTA_LLM_API_SECRET}`) { json(response, 401, { error: "unauthorized" }); return; }
+    } else if (application.requestAuthenticators?.length && !["/ready", "/version"].includes(url.pathname)) {
+      principalForRequest(application, request); // Validate every presented credential before any route or fallback.
+    }
     if (request.method === "GET" && url.pathname === "/version") { response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(buildInfo())); return; }
     if (request.method === "GET" && url.pathname === "/ready") { json(response, 200, { ready: true, service: "porta", version: buildInfo() }); return; }
     if (request.method === "GET" && url.pathname === "/v1/models") { if (!application.modelCatalog) { json(response, 503, { error: { message: "Model catalog is unavailable.", type: "server_error", code: "model_catalog_unavailable" } }); return; } await handleOpenAIModels({ modelCatalog: application.modelCatalog }, response); return; }
@@ -135,10 +145,10 @@ async function route(application: WebApplication, webRoot: string, request: Inco
     if (request.method === "POST" && url.pathname === "/auth/webauthn/enrollment/verify") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { const body = await readJson(request) as any; const credential = await application.webauthn.registerPending(String(body.transaction), body.response, typeof body.displayName === "string" ? body.displayName : "Automation credential"); json(response, 202, { status: "pending", credentialId: credential.credentialId, displayName: credential.displayName, createdAt: credential.createdAt }); } catch (error) { json(response, 400, { error: error instanceof Error ? error.message : "WEBAUTHN_ENROLLMENT_INVALID" }); } return; }
     if (request.method === "POST" && url.pathname === "/auth/webauthn/login/options") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { json(response, 200, await application.webauthn.loginOptions()); } catch (error) { json(response, 403, { error: error instanceof Error ? error.message : "WEBAUTHN_NOT_ENROLLED" }); } return; }
     if (request.method === "POST" && url.pathname === "/auth/webauthn/login/verify") { if (!application.webauthn) { json(response, 503, { error: "WEBAUTHN_UNAVAILABLE" }); return; } try { const body = await readJson(request) as any; await application.webauthn.login(String(body.transaction), body.response); const token = randomBytes(32).toString("base64url"); application.uiSessions?.set(token, Date.now() + 8 * 60 * 60 * 1000); response.setHeader("Set-Cookie", `porta_ui=${token}; HttpOnly; SameSite=Strict; Path=/`); json(response, 200, { authenticated: true }); } catch (error) { json(response, 401, { error: error instanceof Error ? error.message : "WEBAUTHN_ASSERTION_INVALID" }); } return; }
-    if (request.method === "GET" && url.pathname === "/auth/status") { json(response, 200, { configured: application.webauthn?.hasCredentials() ?? false, authenticated: isUiSessionRequest(application, request) }); return; }
+    if (request.method === "GET" && url.pathname === "/auth/status") { json(response, 200, { configured: application.webauthn?.hasCredentials() ?? false, authenticated: Boolean(humanPrincipalForRequest(application, request)) }); return; }
     if (request.method === "POST" && url.pathname === "/auth/logout") { const token = uiCookie(request); if (token) application.uiSessions?.delete(token); response.writeHead(303, { Location: "/login", "Set-Cookie": "porta_ui=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/" }); response.end(); return; }
-    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/setup" || (url.pathname === "/login" && request.headers.accept?.includes("text/html")))) { const authenticated = isUiSessionRequest(application, request); const configured = application.webauthn?.hasCredentials() ?? false; if (authenticated) { response.writeHead(303, { Location: "/app" }); response.end(); return; } if (url.pathname === "/setup" && configured) { response.writeHead(303, { Location: "/login" }); response.end(); return; } if (url.pathname === "/login" && !configured) { response.writeHead(303, { Location: "/setup" }); response.end(); return; } await staticFile(webRoot, "/landing.html", response); return; }
-    if (request.method === "GET" && url.pathname === "/app") { if (!isUiSessionRequest(application, request)) { response.writeHead(303, { Location: "/login" }); response.end(); return; } await staticFile(webRoot, "/index.html", response); return; }
+    if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/setup" || (url.pathname === "/login" && request.headers.accept?.includes("text/html")))) { const authenticated = Boolean(humanPrincipalForRequest(application, request)); const configured = application.webauthn?.hasCredentials() ?? false; if (authenticated) { response.writeHead(303, { Location: "/app" }); response.end(); return; } if (url.pathname === "/setup" && configured) { response.writeHead(303, { Location: "/login" }); response.end(); return; } if (url.pathname === "/login" && !configured) { response.writeHead(303, { Location: "/setup" }); response.end(); return; } await staticFile(webRoot, "/landing.html", response); return; }
+    if (request.method === "GET" && url.pathname === "/app") { if (!humanPrincipalForRequest(application, request)) { response.writeHead(303, { Location: "/login" }); response.end(); return; } await staticFile(webRoot, "/index.html", response); return; }
     if (request.method === "GET" && url.pathname === "/identity") { if (!application.identity) { json(response, 503, { error: "Identity unavailable." }); return; } json(response, 200, application.identity.public); return; }
     if (request.method === "GET" && url.pathname === "/login") { if (!application.login) { json(response, 503, { error: "Login unavailable." }); return; } json(response, 200, application.login.challenge()); return; }
     if (request.method === "POST" && url.pathname === "/login") { if (!application.login) { json(response, 503, { error: "Login unavailable." }); return; } try { json(response, 200, application.login.login((await readJson(request)) as { challengeId: string; identity: string; signature: string })); } catch (error) { const message = error instanceof Error ? error.message : "LOGIN_FAILED"; json(response, 401, { error: message }); } return; }
@@ -151,6 +161,7 @@ async function route(application: WebApplication, webRoot: string, request: Inco
     await staticFile(webRoot, url.pathname, response);
   } catch (error) {
     if (response.headersSent) response.end();
+    else if (error instanceof AuthenticationRejected) { json(response, 401, { error: "AUTHENTICATION_REJECTED" }); }
     else { const status = error instanceof RemoteApplicationError ? (error.kind === "denied" ? 403 : error.kind === "unsupported" ? 404 : error.kind === "unavailable" ? 503 : 502) : 500; json(response, status, { error: error instanceof Error ? error.message : "Request failed.", kind: error instanceof RemoteApplicationError ? error.kind : "failed" }); }
   }
 }
@@ -158,7 +169,60 @@ async function route(application: WebApplication, webRoot: string, request: Inco
 function sessionStatus(history: readonly { readonly role?: string }[]): "ready" | "working" | "completed" { const last = history[history.length - 1]; return last?.role === "assistant" ? "completed" : last?.role === "user" ? "working" : "ready" }
 function uiCookie(request: IncomingMessage): string | undefined { return request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("porta_ui="))?.slice("porta_ui=".length); }
 function isUiSessionRequest(application: WebApplication, request: IncomingMessage): boolean { const cookie = uiCookie(request); const expiresAt = cookie ? application.uiSessions?.get(cookie) : undefined; if (!expiresAt || expiresAt <= Date.now()) { if (cookie) application.uiSessions?.delete(cookie); return false; } return true; }
-function principalForRequest(application: WebApplication, request: IncomingMessage): Principal | undefined { const authorization = request.headers.authorization; if (authorization?.startsWith("Bearer ")) { const token = authorization.slice(7).trim(); const integration = application.integrationAuth?.authenticate(token); if (integration) return integration; const identity = application.login?.authenticateToken(token); return identity ? { kind: "node", identity } : undefined; } const cookie = uiCookie(request); return isUiSessionRequest(application, request) ? { kind: "human", identity: `web:${cookie ?? "authenticated"}` } : undefined; }
+function humanPrincipalForRequest(application: WebApplication, request: IncomingMessage): Principal | undefined { const principal = principalForRequest(application, request); return principal?.kind === "human" ? principal : undefined; }
+function legacyPrincipalForRequest(application: WebApplication, request: IncomingMessage): Principal | undefined { const authorization = request.headers.authorization; if (authorization?.startsWith("Bearer ")) { const token = authorization.slice(7).trim(); const integration = application.integrationAuth?.authenticate(token); if (integration) return integration; const identity = application.login?.authenticateToken(token); return identity ? { kind: "node", identity } : undefined; } const cookie = uiCookie(request); return isUiSessionRequest(application, request) ? { kind: "human", identity: `web:${cookie ?? "authenticated"}` } : undefined; }
+const requestPrincipals = new WeakMap<IncomingMessage, Principal | undefined>();
+function principalForRequest(application: WebApplication, request: IncomingMessage): Principal | undefined {
+  if (!application.requestAuthenticators?.length) return legacyPrincipalForRequest(application, request);
+  if (requestPrincipals.has(request)) return requestPrincipals.get(request);
+  const material = authenticationHeaders(request);
+  const providers: RequestAuthenticator[] = [...application.requestAuthenticators, { authenticate({ authorization }) {
+    if (!authorization?.startsWith("Bearer ")) return undefined;
+    const token = authorization.slice(7).trim();
+    const integration = application.integrationAuth?.authenticate(token);
+    const identity = application.login?.authenticateToken(token);
+    return principalConsensus([...(integration ? [integration] : []), ...(identity ? [{ kind: "node" as const, identity }] : [])]);
+  } }];
+  const principals: RequestPrincipal[] = [];
+  for (const credential of [material.authorization !== undefined ? { authorization: material.authorization } : undefined, material.admission !== undefined ? { admission: material.admission } : undefined]) {
+    if (!credential) continue;
+    const principal = authenticateMaterial(providers, credential);
+    if (!principal) throw new AuthenticationRejected();
+    principals.push(principal);
+  }
+  const cookie = uiCookie(request);
+  if (cookie !== undefined) {
+    if (!isUiSessionRequest(application, request)) throw new AuthenticationRejected();
+    principals.push({ kind: "human", identity: `web:${cookie}` });
+  }
+  const principal = principalConsensus(principals);
+  const result = principal ? toPrincipal(principal) : undefined;
+  requestPrincipals.set(request, result);
+  return result;
+}
+
+function authenticateMachineRequest(application: WebApplication, request: IncomingMessage, mode: "compatible" | "required"): void {
+  const material = authenticationHeaders(request);
+  // Browser sessions never authorize the machine listener.
+  if (uiCookie(request) !== undefined) throw new AuthenticationRejected();
+  const principals: RequestPrincipal[] = [];
+  const secret = process.env.PORTA_LLM_API_SECRET;
+  const legacy = Boolean(secret) && material.authorization === `Bearer ${secret}`;
+  if (material.authorization !== undefined && !legacy) {
+    const principal = authenticateMaterial(application.requestAuthenticators!, { authorization: material.authorization });
+    if (!principal) throw new AuthenticationRejected();
+    principals.push(principal);
+  }
+  if (material.admission !== undefined) {
+    const principal = authenticateMaterial(application.requestAuthenticators!, { admission: material.admission });
+    if (!principal) throw new AuthenticationRejected();
+    principals.push(principal);
+  }
+  const principal = principalConsensus(principals);
+  if (!principal && !(mode === "compatible" && legacy && material.admission === undefined)) throw new AuthenticationRejected();
+  if (principal) requestPrincipals.set(request, toPrincipal(principal));
+}
+function toPrincipal(principal: RequestPrincipal): Principal { if (principal.kind === "integration") return { kind: "integration", identity: principal.identity, permissions: principal.permissions }; return { kind: principal.kind, identity: principal.identity }; }
 function isAuthenticatedApiRequest(application: WebApplication, request: IncomingMessage): boolean { return Boolean(principalForRequest(application, request)); }
 
 async function api(application: WebApplication, url: URL, request: IncomingMessage, response: ServerResponse, targets: readonly PortaTarget[], federatedNodeCache: Map<string, FederatedNodeCache>): Promise<void> {

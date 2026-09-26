@@ -23,8 +23,10 @@ export class CapabilityRegistry implements CapabilityResolver {
 }
 
 export class PluginManager {
-  private readonly components: unknown[] = [];
+  private readonly components = new Map<string, { pluginId: string; component: unknown }[]>();
   constructor(readonly registry = new CapabilityRegistry()) {}
+  resolve<T>(requirement: CapabilityRequirement): T | undefined { const capability = this.registry.resolve(requirement); if (!capability) return undefined; const components = this.components.get(capability.id) ?? []; if (components.length > 1) throw failure("CAPABILITY_CONFLICT", `Capability '${capability.id}' has multiple registered components.`); if (!components.length && !requirement.optional) throw failure("CAPABILITY_UNAVAILABLE", `Capability '${capability.id}' has no active component.`); return components[0]?.component as T | undefined; }
+  resolveAll<T>(requirement: CapabilityRequirement): readonly T[] { const capability = this.registry.resolve(requirement); const components = capability ? this.components.get(capability.id) ?? [] : []; if (!components.length && !requirement.optional) throw failure("CAPABILITY_UNAVAILABLE", `Capability '${requirement.capability}' has no active component.`); return components.map((entry) => entry.component as T); }
   qualifyPlugin(manifest: HarnessPlugin["manifest"], environment: PluginEnvironmentSnapshot = { availableCapabilities: this.registry.snapshot(), plugins: [] }): PluginQualification { return qualifyPlugin(manifest, environment); }
   planPlugins(plugins: readonly HarnessPlugin[], environment: PluginEnvironmentSnapshot = { availableCapabilities: this.registry.snapshot(), plugins: [] }): PluginLoadPlan { return planPlugins(plugins.map((plugin) => plugin.manifest), environment); }
   async register(plugins: readonly HarnessPlugin[]): Promise<void> {
@@ -32,20 +34,26 @@ export class PluginManager {
     if (plan.status !== "ready") throw failure("PLUGIN_INVALID", "Plugin configuration is not loadable.", false, plan);
     const ordered = plan.activationOrder.map((id) => plugins.find((plugin) => plugin.manifest.id === id)!);
     for (const plugin of ordered) for (const capability of plugin.manifest.provides) this.registry.register(capability);
-    const registrar = { provide: (capability: CapabilityDescriptor, component: unknown) => { this.registry.register(capability); this.components.push(component); } };
-    for (const plugin of ordered) await plugin.register(registrar);
+    const staged = new Map<string, { pluginId: string; component: unknown }[]>();
+    for (const plugin of ordered) await plugin.register({ provide: (capability, component) => {
+      if (!plugin.manifest.provides.some((declared) => declared.id === capability.id && declared.version === capability.version)) throw failure("PLUGIN_INVALID", "Plugin registered an undeclared capability.");
+      const entries = staged.get(capability.id) ?? [];
+      if (entries.some((entry) => entry.pluginId === plugin.manifest.id)) throw failure("CAPABILITY_CONFLICT", "Plugin registered a capability twice.");
+      entries.push({ pluginId: plugin.manifest.id, component }); staged.set(capability.id, entries);
+    } });
     const context: ComponentContext = { capabilities: this.registry };
     const initialized: HarnessPlugin[] = [];
     const started: HarnessPlugin[] = [];
     try {
       for (const plugin of ordered) { if (plugin.initialize) await plugin.initialize(context); initialized.push(plugin); }
       for (const plugin of ordered) { if (plugin.start) await plugin.start(); started.push(plugin); }
+      for (const [id, entries] of staged) this.components.set(id, [...(this.components.get(id) ?? []), ...entries]);
     } catch (error) {
       for (const plugin of [...started, ...initialized.filter((plugin) => !started.includes(plugin))].reverse()) if (plugin.stop) await plugin.stop();
       throw error;
     }
   }
-  async stop(plugins: readonly HarnessPlugin[]): Promise<void> { const plan = this.planPlugins(plugins); if (plan.status !== "ready") throw failure("PLUGIN_INVALID", "Plugin configuration is not loadable.", false, plan); const byId = new Map(plugins.map((plugin) => [plugin.manifest.id, plugin])); for (const id of plan.shutdownOrder) if (byId.get(id)?.stop) await byId.get(id)!.stop!(); }
+  async stop(plugins: readonly HarnessPlugin[]): Promise<void> { const plan = this.planPlugins(plugins); if (plan.status !== "ready") throw failure("PLUGIN_INVALID", "Plugin configuration is not loadable.", false, plan); const byId = new Map(plugins.map((plugin) => [plugin.manifest.id, plugin])); const errors: unknown[] = []; for (const id of plan.shutdownOrder) { for (const [capability, entries] of this.components) this.components.set(capability, entries.filter((entry) => entry.pluginId !== id)); try { await byId.get(id)?.stop?.(); } catch (error) { errors.push(error); } } if (errors.length) throw new AggregateError(errors, "Plugin shutdown failed."); }
 }
 
 export class HarnessKernel implements ApplicationGateway {

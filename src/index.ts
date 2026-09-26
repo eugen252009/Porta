@@ -6,6 +6,8 @@ export * from "./composition.js";
 export * from "./adapters/model-ollama.js";
 export * from "./adapters/model-openai-compatible.js";
 export * from "./adapters/model-openai-codex.js";
+export * from "./adapters/auth-homeauth.js";
+export * from "./request-authentication.js";
 export * from "./adapters/codex-auth.js";
 export * from "./model-picker.js";
 export * from "./runtime.js";

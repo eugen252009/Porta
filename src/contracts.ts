@@ -28,6 +28,12 @@ export type HealthReason = (typeof healthReasons)[number];
 export interface HealthStatus { status: "healthy" | "unhealthy"; reason?: HealthReason; message?: string; details?: unknown }
 export const healthStatusSchema = z.object({ status: z.enum(["healthy", "unhealthy"]), reason: z.enum(healthReasons).optional(), message: z.string().optional(), details: z.unknown().optional() });
 export interface CapabilityResolver { resolve(requirement: CapabilityRequirement): CapabilityDescriptor | undefined }
+export type RequestPrincipal =
+  | { readonly kind: "human" | "node" | "local"; readonly identity: string }
+  | { readonly kind: "integration"; readonly identity: string; readonly permissions: readonly string[] };
+export interface AuthenticationMaterial { readonly authorization?: string; readonly admission?: string }
+/** Undefined means not accepted; exceptions fail the entire authentication attempt. */
+export interface RequestAuthenticator { authenticate(request: AuthenticationMaterial): RequestPrincipal | undefined }
 export interface PluginRegistrar { provide(capability: CapabilityDescriptor, component: unknown): void }
 export interface HarnessPlugin { readonly manifest: PluginManifest; register(registrar: PluginRegistrar): void | Promise<void>; initialize?: Initializable["initialize"]; start?: Startable["start"]; stop?: Stoppable["stop"] }
 
