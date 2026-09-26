@@ -91,9 +91,11 @@ export function createPortaWebServer(application: WebApplication, options: WebSe
   const webRoot = options.webRoot ?? join(process.cwd(), "web");
   const targets = [{ id: "local", displayName: "Local", kind: "local" as const }, ...(options.targets ?? []).filter((target) => target.id !== "local")];
   const uiSessions = application.uiSessions ?? new Map<string, number>();
+  const routeApplication: WebApplication = { ...application, uiSessions };
+  if (!options.apiOnly) delete routeApplication.requestAuthenticators;
   const federatedNodeCache = new Map<string, FederatedNodeCache>();
   const tls = options.tls ?? { mode: "disabled" as const };
-  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route({ ...application, uiSessions }, webRoot, request, response, targets, federatedNodeCache, options.apiOnly ?? false, options.apiAuthentication ?? "compatible"); };
+  const handler = (request: IncomingMessage, response: ServerResponse) => { const origin = request.headers.origin; if (origin && options.extensionOrigins?.includes(origin)) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type"); response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"); response.setHeader("Vary", "Origin"); } if (request.method === "OPTIONS" && (request.url ?? "").startsWith("/api/")) { response.writeHead(204); response.end(); return; } void route(routeApplication, webRoot, request, response, targets, federatedNodeCache, options.apiOnly ?? false, options.apiAuthentication ?? "compatible"); };
   const server = tls.mode === "native" ? createNativeTlsServer(tls, handler) : createServer(handler);
   return {
     server,
@@ -129,11 +131,13 @@ async function route(application: WebApplication, webRoot: string, request: Inco
     const machineAPI = url.pathname === "/v1" || url.pathname.startsWith("/v1/");
     if (apiOnly && !machineAPI && url.pathname !== "/version" && url.pathname !== "/ready") { json(response, 404, { error: "Not found" }); return; }
     if (!apiOnly && machineAPI) { json(response, 404, { error: "Not found" }); return; }
+    // Browser/UI traffic uses Porta's own login and session credentials. Keep
+    // raw-header ambiguity and spoofed identity headers rejected, but do not
+    // authenticate browser routes with machine/API request authenticators.
+    if (!apiOnly && !["/ready", "/version"].includes(url.pathname)) authenticationHeaders(request);
     if (apiOnly && machineAPI) {
       if (application.requestAuthenticators?.length) authenticateMachineRequest(application, request, apiAuthentication);
       else if (process.env.PORTA_LLM_API_SECRET && request.headers.authorization !== `Bearer ${process.env.PORTA_LLM_API_SECRET}`) { json(response, 401, { error: "unauthorized" }); return; }
-    } else if (application.requestAuthenticators?.length && !["/ready", "/version"].includes(url.pathname)) {
-      principalForRequest(application, request); // Validate every presented credential before any route or fallback.
     }
     if (request.method === "GET" && url.pathname === "/version") { response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(buildInfo())); return; }
     if (request.method === "GET" && url.pathname === "/ready") { json(response, 200, { ready: true, service: "porta", version: buildInfo() }); return; }

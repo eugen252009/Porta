@@ -71,7 +71,7 @@ describe("HomeAuth admission plugin", () => {
     await manager.stop(plugins);
   });
 
-  it("uses the plugin for human UI/API auth and rejects spoofed or non-human access", async () => {
+  it("keeps HomeAuth machine admissions out of browser UI and local API authentication", async () => {
     const gateway: ApplicationGateway = { async *execute(_command: KernelCommand) {} };
     const provider = authenticator();
     const server = createPortaWebServer({ gateway, requestAuthenticators: [provider] }, { port: 0 });
@@ -82,14 +82,14 @@ describe("HomeAuth admission plugin", () => {
     try {
       const spoofed = await fetch(`${base}/api/identity/allowed`, { headers: { "X-HomeAuth-Subject": "human:attacker", "X-HomeAuth-Kind": "human" } });
       expect(spoofed.status).toBe(401);
-      const denied = await fetch(`${base}/app`, { headers: { authorization: `Bearer ${token({ serviceId: 18 })}` }, redirect: "manual" });
-      expect(denied.status).toBe(401);
-      const accepted = await fetch(`${base}/app`, { headers: { authorization: `Bearer ${token()}` } });
-      expect(accepted.status).toBe(200);
+      const rejectedGrant = await fetch(`${base}/app`, { headers: { authorization: `Bearer ${token({ serviceId: 18 })}` }, redirect: "manual" });
+      expect(rejectedGrant.status).toBe(303);
+      const admissionOnly = await fetch(`${base}/app`, { headers: { authorization: `Bearer ${token()}` }, redirect: "manual" });
+      expect(admissionOnly.status).toBe(303);
       const status = await fetch(`${base}/auth/status`, { headers: { authorization: `Bearer ${token()}` } });
-      expect(await status.json()).toEqual({ configured: false, authenticated: true });
+      expect(await status.json()).toEqual({ configured: false, authenticated: false });
       const api = await fetch(`${base}/api/identity/allowed`, { headers: { authorization: `Bearer ${token()}` } });
-      expect(api.status).toBe(503);
+      expect(api.status).toBe(401);
       const machine = await fetch(`${base}/app`, { headers: { authorization: `Bearer ${token({ user: "service:fixture" })}` }, redirect: "manual" });
       expect(machine.status).toBe(303);
     } finally {

@@ -56,32 +56,75 @@ function duplicate(base: string, path: string, headers: string[]): Promise<numbe
 }
 
 describe("production-like HomeAuth transport boundaries", () => {
-  it("verifies a dedicated signed header and exposes only the protected application", async () => {
-    const f = await fixture();
+  it("keeps Porta browser-session routes separate from HomeAuth admission authentication", async () => {
+    const f = await fixture(false, "required");
     try {
-      const res = await fetch(`${f.base}/api/models`, { headers: { "HomeAuth-Admission": token } });
+      const browser = { cookie: "porta_ui=fixture" };
+      expect((await fetch(`${f.base}/`, { headers: browser, redirect: "manual" })).status).toBe(303);
+      expect((await fetch(`${f.base}/login`, { headers: { ...browser, accept: "text/html" }, redirect: "manual" })).status).toBe(303);
+      expect((await fetch(`${f.base}/app`, { headers: browser, redirect: "manual" })).status).toBe(200);
+      expect((await fetch(`${f.base}/app`, { redirect: "manual" })).status).toBe(303);
+      expect((await fetch(`${f.base}/login`, { headers: { accept: "text/html" }, redirect: "manual" })).status).toBe(303);
+      // A browser session remains authoritative when a proxy also forwards an API admission.
+      expect((await fetch(`${f.base}/app`, { headers: { ...browser, "HomeAuth-Admission": token }, redirect: "manual" })).status).toBe(200);
+      expect((await fetch(`${f.base}/api/models`, { headers: { ...browser, "HomeAuth-Admission": token } })).status).toBe(200);
+      // An API-only admission must never substitute for Porta's browser session.
+      expect((await fetch(`${f.base}/app`, { headers: { "HomeAuth-Admission": token }, redirect: "manual" })).status).toBe(303);
+      expect((await fetch(`${f.base}/api/models`, { headers: { "HomeAuth-Admission": token } })).status).toBe(401);
+      expect((await fetch(`${f.base}/ready`)).status).toBe(200);
+      expect((await fetch(`${f.base}/version`)).status).toBe(200);
+      expect((await fetch(`${f.base}/v1/models`)).status).toBe(404);
+    } finally { await f.close(); }
+  });
+
+  it("keeps API-only required mode limited to /v1 and rejects static, invalid, expired, wrong-grant, and spoofed credentials", async () => {
+    vi.stubEnv("PORTA_LLM_API_SECRET", "local-fixture-secret");
+    const f = await fixture(true, "required");
+    try {
+      for (const path of ["/", "/login", "/app"]) expect((await fetch(`${f.base}${path}`, { redirect: "manual" })).status).toBe(404);
+      expect((await fetch(`${f.base}/ready`)).status).toBe(200);
+      expect((await fetch(`${f.base}/version`)).status).toBe(200);
+      const path = `${f.base}/v1/models`;
+      expect((await fetch(path)).status).toBe(401);
+      expect((await fetch(path, { headers: { authorization: "Bearer local-fixture-secret" } })).status).toBe(401);
+      expect((await fetch(path, { headers: { "HomeAuth-Admission": token } })).status).toBe(200);
+      const invalid = [
+        signed({ ...claims, exp: now / 1000 }),
+        signed({ ...claims, cap: "EA" }),
+        signed(claims, generateKeyPairSync("ed25519").privateKey),
+        "spoofed",
+      ];
+      for (const admission of invalid) expect((await fetch(path, { headers: { "HomeAuth-Admission": admission } })).status).toBe(401);
+      expect((await fetch(path, { headers: { "HomeAuth-Admission": token, "X-HomeAuth-Subject": "human:spoofed" } })).status).toBe(401);
+    } finally { await f.close(); }
+  });
+
+  it("verifies a dedicated signed header on the API-only listener", async () => {
+    const f = await fixture(true, "required");
+    try {
+      const res = await fetch(`${f.base}/v1/models`, { headers: { "HomeAuth-Admission": token } });
       expect(res.status).toBe(200);
-      expect((await fetch(`${f.base}/api/models`, { headers: { authorization: `Bearer ${token}`, "HomeAuth-Admission": token } })).status).toBe(200);
-      expect((await fetch(`${f.base}/api/models`)).status).toBe(401);
+      expect((await fetch(`${f.base}/v1/models`, { headers: { authorization: `Bearer ${token}`, "HomeAuth-Admission": token } })).status).toBe(200);
+      expect((await fetch(`${f.base}/v1/models`)).status).toBe(401);
     } finally { await f.close(); }
   });
   it("rejects malformed, expired, future, missing/wrong grants, wrong signature and unknown identity kinds", async () => {
-    const f = await fixture();
+    const f = await fixture(true, "required");
     try {
       const bad = ["garbage", token + ".extra", "", "x".repeat(33000), signed({ ...claims, exp: now / 1000 }), signed({ ...claims, iat: now / 1000 + 31 }), signed({ ...claims, cap: "EA" }), signed({ ...claims, cap: "" }), signed({ ...claims, cap: undefined }), signed({ ...claims, user: "admin:evil" }), signed({ ...claims, user: "bare-identity" }), signed(claims, generateKeyPairSync("ed25519").privateKey), signed({ ...claims, v: 2 })];
       for (const admission of bad) {
-        const res = await fetch(`${f.base}/api/models`, { headers: { "HomeAuth-Admission": admission, cookie: "porta_ui=fixture" } });
+        const res = await fetch(`${f.base}/v1/models`, { headers: { "HomeAuth-Admission": admission, cookie: "porta_ui=fixture" } });
         expect([401, 431]).toContain(res.status);
       }
     } finally { await f.close(); }
   });
   it("rejects identity spoofing, duplicate headers and credential conflicts even with a valid cookie/token", async () => {
-    const f = await fixture();
+    const f = await fixture(true, "required");
     try {
-      for (const name of ["X-HomeAuth-Subject", "X-HomeAuth-Kind", "Remote-User"]) expect((await fetch(`${f.base}/api/models`, { headers: { [name]: "evil", "HomeAuth-Admission": token } })).status).toBe(401);
+      for (const name of ["X-HomeAuth-Subject", "X-HomeAuth-Kind", "Remote-User"]) expect((await fetch(`${f.base}/v1/models`, { headers: { [name]: "evil", "HomeAuth-Admission": token } })).status).toBe(401);
       for (const name of ["Authorization", "HomeAuth-Admission", "Cookie"]) {
         const value = name === "Authorization" ? `Bearer ${token}` : name === "Cookie" ? "porta_ui=fixture" : token;
-        expect(await duplicate(f.base, "/api/models", [name, value, name.toLowerCase(), value])).toBe(401);
+        expect(await duplicate(f.base, "/v1/models", [name, value, name.toLowerCase(), value])).toBe(401);
       }
       const conflicts: Record<string, string>[] = [
         { authorization: "Bearer invalid", "HomeAuth-Admission": token },
@@ -89,18 +132,18 @@ describe("production-like HomeAuth transport boundaries", () => {
         { cookie: "porta_ui=fixture", "HomeAuth-Admission": token },
         { cookie: "porta_ui=fixture", authorization: "Bearer invalid" },
       ];
-      for (const headers of conflicts) expect((await fetch(`${f.base}/api/models`, { headers })).status).toBe(401);
+      for (const headers of conflicts) expect((await fetch(`${f.base}/v1/models`, { headers })).status).toBe(401);
     } finally { await f.close(); }
   });
   it("applies order-independent authenticator consensus through the HTTP boundary", async () => {
     const same = accept();
-    const f = await fixture(false, "compatible", true, [same]);
+    const f = await fixture(true, "required", true, [same]);
     try {
-      expect((await fetch(`${f.base}/api/models`, { headers: { "HomeAuth-Admission": token } })).status).toBe(200);
+      expect((await fetch(`${f.base}/v1/models`, { headers: { "HomeAuth-Admission": token } })).status).toBe(200);
     } finally { await f.close(); }
     for (const conflicting of [accept({ kind: "human", identity: "another-human" }), { authenticate() { throw new Error("sensitive provider failure"); } }]) {
-      const server = await fixture(false, "compatible", true, [conflicting]);
-      try { expect((await fetch(`${server.base}/api/models`, { headers: { "HomeAuth-Admission": token } })).status).toBe(401); }
+      const server = await fixture(true, "required", true, [conflicting]);
+      try { expect((await fetch(`${server.base}/v1/models`, { headers: { "HomeAuth-Admission": token } })).status).toBe(401); }
       finally { await server.close(); }
     }
   });
@@ -124,9 +167,9 @@ describe("production-like HomeAuth transport boundaries", () => {
     try {
       const headers = { "HomeAuth-Admission": signed({ ...claims, user: "service:bridge" }) };
       expect((await fetch(`${f.base}/app`, { headers, redirect: "manual" })).status).toBe(303);
-      expect((await fetch(`${f.base}/api/sessions`, { headers })).status).toBe(403);
+      expect((await fetch(`${f.base}/api/sessions`, { headers })).status).toBe(401);
       const res = await fetch(`${f.base}/api/models`, { headers });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(401);
     } finally { await f.close(); }
   });
   it("preserves disabled behavior and refuses required mode without a plugin", async () => {
