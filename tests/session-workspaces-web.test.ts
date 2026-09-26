@@ -8,6 +8,8 @@ import { ScriptedToolModelProvider } from "../src/agent-mocks.js";
 import { createPortaApplication } from "../src/porta-application.js";
 import { parsePortaConfig } from "../src/porta-config.js";
 import { createPortaWebServer } from "../src/web-server.js";
+import { GitCredentialStore } from "../src/git-credentials.js";
+import type { ProcessRunRequest, ProcessRunResult, ProcessRunner } from "../src/process-runner.js";
 
 const gitAvailable = spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
 const roots: string[] = [];
@@ -69,5 +71,56 @@ it.skipIf(!gitAvailable)("creates isolated API workspaces, saves/reopens them, a
     expect((await fetch(`${base}/api/projects`, { headers }).then((value) => value.json())).projects).toEqual([]);
     const deletedCredential = await fetch(`${base}/api/git-credentials/${sshCredentialBody.credential.id}`, { method: "DELETE", headers });
     expect(deletedCredential.status).toBe(200);
+  } finally { await web.close(); await application.shutdown(); }
+});
+
+it("protects GitHub SSH lifecycle endpoints and exposes only public key metadata", async () => {
+  const root = temp(); const baseWorkspace = join(root, "workspace"); const dataDirectory = join(root, "server-data");
+  await fs.mkdir(baseWorkspace); const trustedKnownHostsFile = join(root, "trusted_known_hosts"); await fs.writeFile(trustedKnownHostsFile, "github.com ssh-ed25519 trusted-fixture\n", { mode: 0o600 });
+  const processRequests: ProcessRunRequest[] = [];
+  const processRunner: ProcessRunner = { async run(request) { processRequests.push(request); return { status: "completed", exitCode: 1, stdout: "Hi fixture! You've successfully authenticated, but GitHub does not provide shell access.\\n", stderr: "", stdoutTruncated: false, stderrTruncated: false }; } };
+  const credentialStore = new GitCredentialStore(join(dataDirectory, "vault"), { githubKnownHostsFile: trustedKnownHostsFile, processRunner });
+  const config = parsePortaConfig({ model: { provider: "ollama", baseUrl: "http://127.0.0.1:1", model: "fixture" }, authorization: { mode: "require-approval" } });
+  const application = await createPortaApplication(config, { dataDirectory, gitCredentialStore: credentialStore, skipModelHealth: true, model: () => new ScriptedToolModelProvider([]) });
+  const web = createPortaWebServer({ ...application, uiSessions: new Map([["browser", Date.now() + 60_000]]) }, { port: 0 }); await web.listen();
+  const address = web.server.address(); if (!address || typeof address === "string") throw new Error("web server did not bind");
+  const base = `http://127.0.0.1:${address.port}`; const headers = { cookie: "porta_ui=browser", "content-type": "application/json" };
+  try {
+    expect((await fetch(`${base}/api/git-credentials/github`)).status).toBe(401);
+    const unauthorized = await fetch(`${base}/api/git-credentials/github`, { headers: { "content-type": "application/json" } }); expect(unauthorized.status).toBe(401);
+    const injectedPrivateKey = "CLIENT_SUPPLIED_PRIVATE_KEY_MUST_NOT_BE_STORED";
+    const rejected = await fetch(`${base}/api/git-credentials/github`, { method: "POST", headers, body: JSON.stringify({ privateKey: injectedPrivateKey }) }); expect(rejected.status).toBe(400); expect(await credentialStore.githubSshKey()).toBeUndefined();
+    const remote = await fetch(`${base}/api/git-credentials/github?target=remote`, { headers }); expect(remote.status).toBe(403);
+
+    const createdResponse = await fetch(`${base}/api/git-credentials/github`, { method: "POST", headers, body: "{}" }); expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as { created: boolean; credential: { id: string; publicKey: string; fingerprint: string } };
+    expect(created.created).toBe(true); expect(created.credential.publicKey).toMatch(/^ssh-ed25519 /); expect(created.credential.fingerprint).toMatch(/^SHA256:/);
+    const privateKey = await fs.readFile(join(credentialStore.root, created.credential.id, "private-key"), "utf8");
+    expect(JSON.stringify(created)).not.toContain(privateKey); expect(JSON.stringify(created)).not.toContain(injectedPrivateKey);
+    const duplicate = await fetch(`${base}/api/git-credentials/github`, { method: "POST", headers, body: "{}" }); expect(duplicate.status).toBe(200);
+    expect(await duplicate.json()).toMatchObject({ created: false, credential: { id: created.credential.id } });
+    const listed = await fetch(`${base}/api/git-credentials`, { headers }).then((response) => response.json());
+    expect(listed.credentials).toHaveLength(1); expect(JSON.stringify(listed)).not.toContain(privateKey); expect(JSON.stringify(listed)).not.toContain("trusted-fixture");
+    const sessionResponse = await fetch(`${base}/api/sessions`, { method: "POST", headers, body: "{}" }); expect(sessionResponse.status).toBe(200);
+    const session = await sessionResponse.json() as { sessionId: string };
+    const assignmentUrl = `${base}/api/sessions/${session.sessionId}/git-credentials`;
+    expect((await fetch(assignmentUrl, { headers: { "content-type": "application/json" } })).status).toBe(401);
+    expect(await fetch(assignmentUrl, { headers }).then((response) => response.json())).toMatchObject({ credentialIds: [] });
+    const malformedAssignment = await fetch(assignmentUrl, { method: "PUT", headers, body: JSON.stringify({ credentialIds: ["not-a-uuid"] }) }); expect(malformedAssignment.status).toBe(400);
+    const assignOld = await fetch(assignmentUrl, { method: "PUT", headers, body: JSON.stringify({ credentialIds: [created.credential.id], expectedCredentialIds: [] }) }); expect(assignOld.status).toBe(200);
+    expect(await fetch(assignmentUrl, { headers }).then((response) => response.json())).toMatchObject({ credentialIds: [created.credential.id] });
+    const staleAssignment = await fetch(assignmentUrl, { method: "PUT", headers, body: JSON.stringify({ credentialIds: [], expectedCredentialIds: [] }) }); expect(staleAssignment.status).toBe(409);
+    expect(await fetch(assignmentUrl, { headers }).then((response) => response.json())).toMatchObject({ credentialIds: [created.credential.id] });
+    const verification = await fetch(`${base}/api/git-credentials/github/verify`, { method: "POST", headers, body: "{}" }); expect(verification.status).toBe(200);
+    const verified = await verification.json(); expect(verified).toMatchObject({ status: "verified", fingerprint: created.credential.fingerprint });
+    expect(processRequests).toHaveLength(1); expect(JSON.stringify(processRequests)).not.toContain(privateKey); expect(JSON.stringify(verified)).not.toContain(privateKey);
+    const rotatedResponse = await fetch(`${base}/api/git-credentials/github/rotate`, { method: "POST", headers, body: "{}" }); expect(rotatedResponse.status).toBe(201);
+    const rotated = await rotatedResponse.json() as { created: boolean; credential: { id: string; fingerprint: string; publicKey: string } };
+    expect(rotated.created).toBe(true); expect(rotated.credential.id).not.toBe(created.credential.id); expect(rotated.credential.fingerprint).not.toBe(created.credential.fingerprint);
+    expect(JSON.stringify(rotated)).not.toContain(privateKey);
+    expect(await fetch(assignmentUrl, { headers }).then((response) => response.json())).toMatchObject({ credentialIds: [created.credential.id] });
+    const assignReplacement = await fetch(assignmentUrl, { method: "PUT", headers, body: JSON.stringify({ credentialIds: [rotated.credential.id], expectedCredentialIds: [created.credential.id] }) }); expect(assignReplacement.status).toBe(200);
+    expect(await fetch(assignmentUrl, { headers }).then((response) => response.json())).toMatchObject({ credentialIds: [rotated.credential.id] });
+    expect((await fetch(`${base}/api/git-credentials`, { headers }).then((response) => response.json())).credentials).toHaveLength(2);
   } finally { await web.close(); await application.shutdown(); }
 });

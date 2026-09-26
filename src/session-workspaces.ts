@@ -102,6 +102,20 @@ export class SessionWorkspaceManager {
     });
   }
   async credentialIdsForSession(sessionId: string): Promise<readonly string[]> { const item = (await this.load()).workspaces.find((record) => record.sessionId === sessionId); return item?.credentialIds ?? []; }
+  async updateCredentialAssignments(sessionId: string, credentialIds: readonly string[], expectedCredentialIds: readonly string[]): Promise<SessionWorkspaceSummary> {
+    assertSessionId(sessionId);
+    return this.exclusive(async () => {
+      const registry = await this.load(); const record = registry.workspaces.find((item) => item.sessionId === sessionId && item.state === "active");
+      if (!record) throw failure("CAPABILITY_UNAVAILABLE", "An active session workspace was not found.");
+      const uniqueIds = [...new Set(credentialIds)];
+      if (uniqueIds.length > 16 || uniqueIds.some((id) => !uuid(id)) || expectedCredentialIds.length > 16 || expectedCredentialIds.some((id) => !uuid(id)) || new Set(expectedCredentialIds).size !== expectedCredentialIds.length) throw failure("VALIDATION_FAILED", "Git credential selection is invalid.");
+      if (record.credentialIds.length !== expectedCredentialIds.length || record.credentialIds.some((id, index) => id !== expectedCredentialIds[index])) throw failure("CAPABILITY_CONFLICT", "Session Git credentials changed since they were loaded. Refresh the assignment list before updating.");
+      await this.credentials?.validateAssignments?.(sessionId, uniqueIds);
+      const updated = { ...record, credentialIds: uniqueIds };
+      const next = { version: 1 as const, workspaces: registry.workspaces.map((item) => item.workspaceId === record.workspaceId ? updated : item) };
+      await this.save(next); this.registry = next; return summary(updated);
+    });
+  }
   async isCredentialAssigned(credentialId: string): Promise<boolean> { return (await this.load()).workspaces.some((record) => record.credentialIds.includes(credentialId)); }
   async deleteSessionWorkspace(sessionId: string, disposition: "keep" | "delete"): Promise<{ savedProjectId?: string }> {
     assertSessionId(sessionId);

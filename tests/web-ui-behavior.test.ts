@@ -31,7 +31,9 @@ function harness(sessions: Record<string, unknown>[] = [{ sessionId: "restored",
   const elements = new Map<string, Element>();
   const requests: { url: string; options?: Record<string, unknown> }[] = [];
   const stored: string[] = [];
+  const copied: string[] = [];
   const context = {
+    navigator: { clipboard: { async writeText(value: string) { copied.push(value); } } },
     document: {
       querySelector(id: string) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
       createElement() { return new Element(); },
@@ -43,7 +45,7 @@ function harness(sessions: Record<string, unknown>[] = [{ sessionId: "restored",
     fetch: async (url: string, options?: Record<string, unknown>) => { requests.push({ url, options }); return fetcher ? fetcher(url, options) : { ok: true, json: async () => ({ sessions }) }; },
   };
   runInNewContext(source, context);
-  return { elements, requests, stored, run: (code: string) => runInNewContext(code, context) };
+  return { elements, requests, stored, copied, run: (code: string) => runInNewContext(code, context) };
 }
 
 describe("workspace controller behavior", () => {
@@ -266,5 +268,72 @@ describe("workspace controller behavior", () => {
     ui.run('newRepository.value = ""; newGitCredential.value = "credential-id"; syncWorkspaceCreateFields()');
     expect(await ui.run("newWorkspaceOptions()")).toEqual({});
     expect(ui.elements.get("#new-git-credential")?.disabled).toBe(true);
+  });
+
+  it("manages GitHub SSH keys without putting private material in browser requests or storage", async () => {
+    const privateMaterial = "PRIVATE_MATERIAL_NEVER_SENT_TO_BROWSER";
+    let current: { id: string; publicKey: string; fingerprint: string; verifiedAt?: string } | null = null;
+    const credentials: { id: string; name: string; type: string }[] = [];
+    const responses: Record<string, unknown> = {};
+    const fetcher = async (url: string, options?: Record<string, unknown>) => {
+      if (url === "/api/git-credentials/github" && options?.method === "POST") {
+        const rotate = false; current = { id: rotate ? "rotated" : "generated", publicKey: "ssh-ed25519 AAAATESTKEY porta-github", fingerprint: "SHA256:fixture" };
+        credentials.push({ id: current.id, name: "GitHub SSH key", type: "ssh" }); responses.generated = current;
+        return { ok: true, json: async () => ({ created: true, credential: current }) };
+      }
+      if (url === "/api/git-credentials/github/rotate") {
+        current = { id: "rotated", publicKey: "ssh-ed25519 AAAANEWKEY porta-github", fingerprint: "SHA256:new" };
+        credentials.push({ id: current.id, name: "GitHub SSH key", type: "ssh" }); responses.rotated = current;
+        return { ok: true, json: async () => ({ created: true, credential: current }) };
+      }
+      if (url === "/api/git-credentials/github/verify") return { ok: true, json: async () => ({ status: "authentication-failed" }) };
+      if (url === "/api/git-credentials/github") return { ok: true, json: async () => ({ configured: Boolean(current), credential: current }) };
+      if (url === "/api/git-credentials") return { ok: true, json: async () => ({ credentials }) };
+      return { ok: true, json: async () => ({}) };
+    };
+    const ui = harness([], fetcher);
+    await ui.run("renderGitHubSshKey()");
+    expect(ui.elements.get("#create-github-ssh-key")?.hidden).toBe(false);
+    await ui.run("createGithubSshKey.onclick()");
+    expect(ui.elements.get("#github-ssh-public-key")?.value).toBe("ssh-ed25519 AAAATESTKEY porta-github");
+    expect(ui.elements.get("#github-ssh-fingerprint")?.textContent).toContain("SHA256:fixture");
+    await ui.run("copyGithubSshPublicKey.onclick()");
+    expect(ui.copied).toEqual(["ssh-ed25519 AAAATESTKEY porta-github"]);
+    await ui.run("verifyGithubSshKey.onclick()");
+    expect(ui.elements.get("#github-ssh-message")?.textContent).toContain("did not accept");
+    await ui.run("rotateGithubSshKey.onclick()");
+    expect(ui.elements.get("#github-ssh-public-key")?.value).toBe("ssh-ed25519 AAAANEWKEY porta-github");
+    expect(credentials.map((credential) => credential.id)).toEqual(["generated", "rotated"]);
+    expect(ui.requests.filter((request) => request.options?.method === "POST").map((request) => request.url)).toEqual([
+      "/api/git-credentials/github", "/api/git-credentials/github/verify", "/api/git-credentials/github/rotate",
+    ]);
+    expect(JSON.stringify(ui.requests)).not.toContain(privateMaterial);
+    expect(JSON.stringify(responses)).not.toContain(privateMaterial);
+    expect(ui.stored.join("\\n")).not.toContain(privateMaterial);
+  });
+
+  it("updates only the active local session's selected Git credential IDs", async () => {
+    let assigned = ["previous-key"];
+    const available = [
+      { id: "previous-key", name: "GitHub SSH key", type: "ssh", fingerprint: "SHA256:old" },
+      { id: "replacement-key", name: "GitHub SSH key", type: "ssh", fingerprint: "SHA256:new" },
+    ];
+    const fetcher = async (url: string, options?: Record<string, unknown>) => {
+      if (url.endsWith("/git-credentials") && options?.method === "PUT") { assigned = JSON.parse(String(options.body)).credentialIds; return { ok: true, json: async () => ({ credentialIds: assigned }) }; }
+      if (url.endsWith("/git-credentials")) return { ok: true, json: async () => ({ credentialIds: assigned, credentials: available }) };
+      return { ok: true, json: async () => ({}) };
+    };
+    const ui = harness([], fetcher);
+    ui.run('state.sessions.set("local:current", {id: "local:current", sessionId: "session-current", targetId: "local"}); state.activeSessionId = "local:current";');
+    await ui.run("renderActiveGitCredentialAssignments()");
+    const options = ui.elements.get("#active-git-credentials")!.children;
+    expect(options.map((option) => [option.value, (option as any).selected])).toEqual([["previous-key", true], ["replacement-key", false]]);
+    ui.run('activeGitCredentials.children[0].selected = false; activeGitCredentials.children[1].selected = true;');
+    await ui.run("saveActiveGitCredentials.onclick()");
+    expect(assigned).toEqual(["replacement-key"]);
+    const update = ui.requests.find((request) => request.options?.method === "PUT");
+    expect(update?.url).toBe("/api/sessions/session-current/git-credentials");
+    expect(update?.options?.method).toBe("PUT");
+    expect(JSON.parse(String(update?.options?.body))).toEqual({ credentialIds: ["replacement-key"], expectedCredentialIds: ["previous-key"] });
   });
 });

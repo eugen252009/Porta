@@ -62,6 +62,19 @@ describe("session-scoped workspaces", () => {
     await expect(failedManager.createForSession("cancelled-session", { repository: "ssh://git.example/repo.git", signal: AbortSignal.abort() })).rejects.toMatchObject({ error: { code: "CANCELLED" } });
   });
 
+  it("updates session credential assignments atomically and enforces session scope", async () => {
+    const data = dataDir(); const credentials = new GitCredentialStore(join(data, "vault")); await credentials.initialize();
+    const global = await credentials.create({ name: "Global token", type: "https", scope: "global", username: "porta", password: "token" });
+    const privateCredential = await credentials.create({ name: "Session token", type: "https", scope: "session", sessionId: sessionB, username: "porta", password: "private-token" });
+    const manager = new SessionWorkspaceManager(data, undefined, credentials); await manager.initialize(); await manager.createForSession(sessionA, { credentialIds: [global.id] });
+    await expect(manager.updateCredentialAssignments(sessionA, [privateCredential.id], [global.id])).rejects.toMatchObject({ error: { code: "AUTHORIZATION_DENIED" } });
+    await expect(manager.updateCredentialAssignments(sessionA, ["not-a-uuid"], [global.id])).rejects.toMatchObject({ error: { code: "VALIDATION_FAILED" } });
+    expect(await manager.credentialIdsForSession(sessionA)).toEqual([global.id]);
+    await expect(manager.updateCredentialAssignments(sessionA, [], [])).rejects.toMatchObject({ error: { code: "CAPABILITY_CONFLICT" } });
+    const updated = await manager.updateCredentialAssignments(sessionA, [], [global.id]); expect(updated.sessionId).toBe(sessionA);
+    const restarted = new SessionWorkspaceManager(data, undefined, credentials); await restarted.initialize(); expect(await restarted.credentialIdsForSession(sessionA)).toEqual([]);
+  });
+
   it("does not follow a replaced workspace symlink during deletion", async () => {
     const data = dataDir(); const manager = new SessionWorkspaceManager(data); await manager.initialize();
     const created = await manager.createForSession(sessionA); const path = join(manager.root, created.workspaceId); const external = join(data, "external"); await fs.mkdir(external); await fs.writeFile(join(external, "keep.txt"), "safe");

@@ -67,6 +67,7 @@ export * from "./execution-persistence.js";
 export * from "./jobs.js";
 export * from "./workspace-permissions.js";
 export * from "./session-workspaces.js";
+export * from "./github-ssh.js";
 export * from "./git-credentials.js";
 export * from "./session-workspace-tools.js";
 export * from "./execution-recovery.js";
